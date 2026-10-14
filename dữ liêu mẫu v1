@@ -1,0 +1,94 @@
+
+-- =============================================================================
+-- ĐỔ DỮ LIỆU MẪU ĐỒ SỘ (MASSIVE SEED DATA PRODUCTION READY)
+-- TOÀN BỘ CHUYẾN ĐI ĐƯỢC ĐỊNH VỊ VÀO NGÀY TÌM KIẾM MẪU: 15/06/2026
+-- =============================================================================
+
+-- 1. NẠP TÀI KHOẢN VĂN BẢN THÔ (MẬT KHẨU NHÌN THẤY ĐỂ DEMO TRỰC TIẾP)
+INSERT INTO users (user_id, username, password_plain, email, full_name, phone, role, wallet_balance) VALUES
+(1, 'admin_vietgo', 'admin123', 'admin@vietgo.vn', 'Hồ Admin Tổng', '0911223344', 'Admin', 0.00),
+-- Đối tác nhà xe tư nhân kinh doanh xe khách
+(2, 'phuongtrang_partner', 'futa123', 'futa@partner.vn', 'Phương Trang FUTA Bus Lines', '19006067', 'Partner', 0.00),
+(3, 'thanhbuoi_partner', 'thanhbuoi123', 'thanhbuoi@partner.vn', 'Thành Bưởi Limousine Company', '19001905', 'Partner', 0.00),
+(4, 'haivan_partner', 'haivan123', 'haivan@partner.vn', 'Hải Vân VIP Express', '02438717171', 'Partner', 0.00),
+-- Khách hàng trải nghiệm
+(5, 'customer_vip', 'customer123', 'khachhang1@gmail.com', 'Đoàn Văn Khách', '0988776655', 'Customer', 2000000.00),
+(6, 'customer_binhthuong', 'customer123', 'khachhang2@gmail.com', 'Lê Thị Vé', '0966554433', 'Customer', 0.00);
+
+-- Cấu hình hồ sơ kinh doanh cho đối tác
+INSERT INTO partner_profiles (partner_id, brand_name, license_number, commission_rate, withdrawable_balance, is_approved) VALUES
+(2, 'Phương Trang FUTA Bus Lines', 'GP-FUTA-2026', 10.00, 75000000.00, TRUE),
+(3, 'Thành Bưởi Limousine', 'GP-TBUOI-2026', 12.00, 48000000.00, TRUE),
+(4, 'Hải Vân Vận Tải Quốc Tế', 'GP-HAIVAN-2026', 9.50, 12500000.00, TRUE);
+
+-- 2. NẠP HẠ TẦNG CÁC TUYẾN ĐƯỜNG ĐẶC TRƯNG VIỆT NAM (ROUTES)
+INSERT INTO routes (route_id, departure_location, arrival_location, distance_km, vehicle_type) VALUES
+(1, 'Sài Gòn', 'Đà Lạt', 310.00, 'Bus'),
+(2, 'Sài Gòn', 'Cần Thơ', 170.00, 'Bus'),
+(3, 'Hà Nội', 'Sapa', 320.00, 'Bus'),
+(4, 'Đà Nẵng', 'Huế', 100.00, 'Bus'),
+(5, 'Hà Nội', 'Đà Nẵng', 750.00, 'Train'),
+(6, 'Sài Gòn', 'Hà Nội', 1200.00, 'Flight');
+
+-- 3. NẠP ĐỘI HÌNH PHƯƠNG TIỆN GỐC (VEHICLES & CARRIAGES)
+INSERT INTO vehicles (vehicle_id, partner_id, vehicle_name, license_plate, vehicle_type, total_seats) VALUES
+-- Đội hình xe khách của các đối tác tư nhân
+(1, 2, 'Phương Trang Giường Phòng VIP', '51B-111.11', 'Bus', 10),
+(2, 2, 'Phương Trang 34 Giường Tiêu Chuẩn', '51B-222.22', 'Bus', 12),
+(3, 3, 'Thành Bưởi Limousine Phòng Đôi', '49B-888.88', 'Bus', 10),
+(4, 4, 'Hải Vân Royal Suite', '29B-333.33', 'Bus', 8),
+-- Đội hình Tàu hỏa và Máy bay của hệ thống (partner_id = NULL phục vụ JIT Generator tự động map)
+(5, NULL, 'Đoàn Tàu Thống Nhất SE3', NULL, 'Train', 12),
+(6, NULL, 'Boeing 787 Dreamliner (Vietnam Airlines)', NULL, 'Flight', 200),
+(7, NULL, 'Airbus A321 Neo (VietJet Air)', NULL, 'Flight', 150);
+
+-- Thiết lập kết cấu Toa cho Đoàn Tàu SE3 hệ thống (Vehicle ID = 5)
+INSERT INTO train_carriages (carriage_id, vehicle_id, carriage_number, carriage_type) VALUES
+(1, 5, 1, 'SoftSeat_AC'), -- Toa 1: Ghế mềm điều hòa
+(2, 5, 2, 'Sleeper_4');   -- Toa 2: Giường nằm khoang 4 cao cấp
+
+-- 4. ĐỔ DỮ LIỆU MẪU LỚN CHO CHUYẾN ĐI XE KHÁCH (BUS TRIPS)
+-- Trải đều toàn bộ khung giờ trong ngày 15/06/2026 từ sáng sớm đến đêm muộn để test bộ lọc API
+INSERT INTO trips (trip_id, route_id, vehicle_id, departure_time, arrival_time, base_price, status) VALUES
+(1, 1, 1, '2026-06-15 00:30:00', '2026-06-15 07:30:00', 350000.00, 'Scheduled'), -- Phương Trang đi Đà Lạt - Chuyến đêm
+(2, 1, 2, '2026-06-15 06:15:00', '2026-06-15 13:15:00', 280000.00, 'Scheduled'), -- Phương Trang đi Đà Lạt - Chuyến sáng
+(3, 1, 3, '2026-06-15 11:45:00', '2026-06-15 18:45:00', 360000.00, 'Scheduled'), -- Thành Bưởi đi Đà Lạt - Chuyến trưa
+(4, 1, 1, '2026-06-15 16:00:00', '2026-06-15 23:00:00', 350000.00, 'Scheduled'), -- Phương Trang đi Đà Lạt - Chuyến chiều
+(5, 1, 3, '2026-06-15 23:15:00', '2026-06-16 06:15:00', 360000.00, 'Scheduled'), -- Thành Bưởi đi Đà Lạt - Chuyến khuya
+(6, 2, 1, '2026-06-15 08:30:00', '2026-06-15 12:00:00', 180000.00, 'Scheduled'), -- Tuyến Cần Thơ chuyến sáng
+(7, 2, 2, '2026-06-15 14:00:00', '2026-06-15 17:30:00', 160000.00, 'Scheduled'), -- Tuyến Cần Thơ chuyến chiều
+(8, 3, 4, '2026-06-15 22:00:00', '2026-06-16 04:00:00', 420000.00, 'Scheduled'); -- Hải Vân đi Sapa chuyến đêm
+
+-- 5. SỰ KIỆN SƠ ĐỒ GHẾ TĨNH CHO XE KHÁCH (TRIP ID = 1 VÀ ID = 2)
+-- Chuyến số 1 (Phương Trang VIP - 10 phòng nằm độc lập)
+INSERT INTO seats (trip_id, carriage_id, seat_number, status) VALUES
+(1, NULL, 'Phòng-01', 'Booked'), (1, NULL, 'Phòng-02', 'Available'),
+(1, NULL, 'Phòng-03', 'Available'), (1, NULL, 'Phòng-04', 'Available'),
+(1, NULL, 'Phòng-05', 'Available'), (1, NULL, 'Phòng-06', 'Available'),
+(1, NULL, 'Phòng-07', 'Available'), (1, NULL, 'Phòng-08', 'Available'),
+(1, NULL, 'Phòng-09', 'Available'), (1, NULL, 'Phòng-10', 'Available');
+
+-- Chuyến số 2 (Phương Trang Chuẩn - 12 ghế nằm)
+INSERT INTO seats (trip_id, carriage_id, seat_number, status) VALUES
+(2, NULL, 'A1', 'Available'), (2, NULL, 'A2', 'Available'), (2, NULL, 'A3', 'Available'),
+(2, NULL, 'B1', 'Booked'),    (2, NULL, 'B2', 'Booked'),    (2, NULL, 'B3', 'Available'),
+(2, NULL, 'C1', 'Available'), (2, NULL, 'C2', 'Available'), (2, NULL, 'C3', 'Available'),
+(2, NULL, 'D1', 'Available'), (2, NULL, 'D2', 'Available'), (2, NULL, 'D3', 'Available');
+
+-- 6. MÔ PHỎNG LỊCH SỬ GIAO DỊCH VÀ ĐÁNH GIÁ SẴN CÓ ĐỂ CHẠY CÂU LỆNH THỐNG KÊ DOANH THU
+INSERT INTO bookings (booking_id, user_id, booking_code, total_amount, payment_status, contact_full_name, contact_email, contact_phone) VALUES
+(1, 5, 'BKVG2026FUTA', 350000.00, 'Paid', 'Đoàn Văn Khách', 'khachhang1@gmail.com', '0988776655');
+
+INSERT INTO tickets (ticket_id, booking_id, seat_id, class_id, passenger_name, passenger_id_card, ticket_price, qr_code_data) VALUES
+(1, 1, 1, NULL, 'Đoàn Văn Khách', NULL, 350000.00, 'MOCK_QR_CODE_DATA_VIETGO_2026');
+
+INSERT INTO feedbacks (feedback_id, ticket_id, user_id, rating_seats, rating_service, comment) VALUES
+(1, 1, 5, 5, 5, 'Dịch vụ xe phòng nằm Phương Trang tuyệt vời, sạch sẽ, xe chạy rất êm và đúng giờ!');
+
+INSERT INTO drivers (driver_id, partner_id, driver_name, driver_phone, experience, status)
+VALUES
+(1, 2, 'Nguyễn Văn Hùng', '0912345678', 8, 'available'),
+(2, 2, 'Trần Văn Nam', '0987654321', 5, 'on-trip'),
+(3, 2, 'Lê Quốc Bảo', '0903456789', 12, 'off-duty'),
+(4, 2, 'Phạm Minh Tuấn', '0938123456', 7, 'available'),
+(5, 4, 'Hoàng Đức Anh', '0977111222', 3, 'available');

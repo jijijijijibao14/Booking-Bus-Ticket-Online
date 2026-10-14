@@ -1,0 +1,63 @@
+I. TỔNG QUAN DỰ ÁN (PROJECT OVERVIEW)
+Tên dự án đề xuất: ViệtGO – Nền tảng đặt vé tổng hợp đa phương tiện (Xe khách, Tàu hỏa & Máy bay).
+Mục tiêu: Tạo ra một siêu ứng dụng (Super App) kết nối liên tuyến, cho phép hành khách tìm kiếm, giữ chỗ và mua vé xe khách, tàu hỏa, máy bay trên một nền tảng tập trung duy nhất.
+II. HỆ THỐNG PHÂN QUYỀN (3 ROLES GỐC)
+Hệ thống sử dụng cơ chế kiểm soát truy cập dựa trên vai trò (RBAC) tập trung tại một bảng users. Trang đăng nhập của hệ thống nạp sẵn tài khoản văn bản thô (Plain Text) để giảng viên và tester tiện demo:
+
+1. 👤 Khách hàng (Customer) – Giao diện Web Client / Mobile Responsive
+
+Mục tiêu: Tối ưu hóa trải nghiệm tìm kiếm, đặt chỗ nhanh và thanh toán tiện lợi.
+
+
+
+2. 🚌 Đối tác / Nhà xe (BusCompany) – Giao diện Merchant Dashboard
+
+Mục tiêu: Không gian quản trị độc lập cho các doanh nghiệp xe khách tư nhân kết nối vào sàn để kinh doanh.
+
+
+
+
+3. 👑 Admin hệ thống (Admin) – Giao diện Super Admin Dashboard
+
+Mục tiêu: Kiểm soát toàn sàn, điều phối dòng tiền hoa hồng và phê duyệt bảo mật.
+
+III. MA TRẬN CHỨC NĂNG VÀ NGHIỆP VỤ BẮT BUỘC (CORE BUSINESS LOGIC)
+
+
+1. Phân hệ Quản lý Phương tiện & Tuyến đường (Polymorphism nhẹ)
+Hệ thống xử lý bài toán đa dạng sơ đồ chỗ ngồi của 3 phương tiện một cách tinh gọn:
+
+Mảng Xe khách: Quản lý sơ đồ lưới ghế phẳng cố định (Ví dụ: xe 22 giường phòng). Khi đối tác tạo chuyến đi (trips), Backend tự sinh các hàng ghế trống cố định vào bảng seats.
+Mảng Tàu hỏa (Mô hình Đường sắt Việt Nam - VNR): Quản lý cấu trúc phân cấp: Chuyến tàu $\rightarrow$ Nhiều Toa (Toa ghế mềm, Toa giường nằm) $\rightarrow$ Danh sách ghế thuộc toa. Trên Figma, khách chọn Toa trước, hệ thống lọc ghế theo công thức WHERE trip_id = X AND carriage_id = Y để render sơ đồ.
+
+
+Mảng Máy bay (CRUD tinh gọn): Không sinh sơ đồ ghế chi tiết để tránh phình đại dữ liệu. Quản lý hoàn toàn qua bảng Hạng vé (flight_ticket_classes gồm Economy và Business). Hệ thống chỉ quản lý tổng chỗ trống và thực hiện cơ chế trừ lùi số lượng (available_slots = available_slots - 1) khi giao dịch thành công.
+
+2. Luồng Đặt hộ & Định danh Hành khách Biến thể
+Tách biệt rõ ràng giữa Người mua vé (Chủ tài khoản) và Hành khách thực tế bước lên phương tiện (Passengers). Ràng buộc dữ liệu co giãn linh hoạt theo từng loại hình di chuyển:
+
+Tuyến Xe khách: Đề cao tính linh hoạt. Giao diện chỉ yêu cầu 1 form thông tin liên hệ của chủ tài khoản. Các vé con tự động lấy tên chủ tài khoản, các trường CCCD/Email được phép để NULL để tối giản thao tác.
+
+Tuyến Tàu hỏa: Yêu cầu minh bạch tuyệt đối. Giao diện bắt buộc nhập Họ tên, Số điện thoại và số CCCD/Hộ chiếu riêng biệt cho từng vị trí ghế (seat_id) để nhân viên đối chiếu an ninh tại cửa ga.
+
+Tuyến Máy bay: Trường seat_id để NULL. Tuy nhiên, để đáp ứng quy định hàng không, từng vé con bắt buộc phải nạp đủ trường Họ tên, Email, SĐT riêng của từng hành khách bay để nhận vé điện tử (E-ticket) và thông báo delay.
+
+3. Cơ chế Khóa giữ ghế tạm thời Realtime (Concurrency Control)Giải quyết bài toán xung đột dữ liệu khi hai người cùng bấm chọn một ghế tại một phần nghìn giây (Overbooking).Cơ chế hoạt động: Khi khách bấm chọn ghế trên UI, Backend thực thi câu lệnh cập nhật có điều kiện 
+
+
+4. Hệ thống Tài chính: Ví ảo, Hoàn tiền & Kết chuyển Doanh thu
+Đóng kín dòng tiền giao dịch trực tuyến trong phạm vi đồ án môn học:
+
+Ví điện tử ảo (Wallet Balance): Tích hợp trường wallet_balance trong bảng users. Khi khách hàng gửi yêu cầu hủy vé (refund_requests) và được Admin phê duyệt, hệ thống tự động tính toán số tiền hoàn dựa trên luật thời gian và cộng thẳng vào ví ảo của khách để tái đặt vé.
+
+Đối soát & Kết chuyển doanh thu (Settlement): Tích hợp trường withdrawable_balance cho nhà xe. Khi chuyến xe kết thúc (Departed), Backend tự động khấu trừ tỷ lệ chiết khấu sàn (commission_rate) , kết chuyển số tiền còn lại vào tài khoản doanh thu của nhà xe và hiển thị nút "Gửi yêu cầu rút tiền" lên Dashboard Đối tác.
+
+5. Phân hệ Đánh giá Đa tiêu chí (Feedbacks)
+
+Quy tắc toàn vẹn: Cấu hình thuộc tính UNIQUE cho trường ticket_id để ép buộc quy tắc: Một chiếc vé đi xong chỉ được đánh giá đúng 1 lần, chặn đứng nạn spam điểm ảo.
+
+Tính năng bóc tách biểu đồ: Điểm đánh giá được chia nhỏ thành rating_seats (Cơ sở vật chất) và rating_service (Thái độ nhân viên). Dữ liệu này giúp Backend chạy các hàm gộp AVG() kết hợp GROUP BY để vẽ biểu đồ thống kê chất lượng nhà xe trên giao diện Admin.
+
+
+
+1. Phân hệ Xác thực & Quản lý Tài khoản (Auth Phân hệ Văn bản thô)Ý tưởng giải pháp: Loại bỏ hoàn toàn lớp mã hóa để tối ưu hóa thời gian chạy thử, nhìn trực quan được mật khẩu khi mở database cho Giảng viên xem, nhưng vẫn đảm bảo cấu trúc an toàn thông qua lớp mã hóa JWT Token.Hướng đi logic code Node.js:Đăng ký (POST /auth/register): Đọc username, password_plain từ body và thực hiện câu lệnh INSERT trực tiếp không qua hàm băm.Đăng nhập (POST /auth/login): Chạy lệnh query so sánh bằng trực tiếp: SELECT * FROM users WHERE username = ? AND password_plain = ?. Nếu có bản ghi, sử dụng jwt.sign({ user_id, username, role }, process.env.JWT_SECRET) phát hành mã Token có thời hạn 24h trả về đầu FrontEnd để lưu cấu phần xác thực.2. Phân hệ Xe Khách (Mô hình Ghế tĩnh kết hợp RAM Redis)Ý tưởng giải pháp: Chống nghẽn tài nguyên I/O cho MySQL bằng cách chuyển trạng thái giữ chỗ tạm thời (Holding 5 phút) lên bộ nhớ RAM của Redis.Hướng đi logic code Node.js:API Xem sơ đồ ghế (GET /bus/seats): Thực hiện đọc song song dữ liệu. Lấy danh sách ghế đã bán đứt từ MySQL (status = 'Booked'), đồng thời quét Redis bằng lệnh redis.keys('lock:trip:X:seat:*'). Nếu ghế trống dưới DB nhưng lại xuất hiện Key trên Redis $\rightarrow$ Trả về Client trạng thái là Holding đi kèm số giây đếm ngược thu được từ lệnh redis.ttl(key).API Giữ chỗ tạm thời (POST /bus/seats/hold): Chạy lệnh nguyên tử của Redis để chiếm chỗ khóa đầu: redis.set(key, user_id, 'NX', 'EX', 300). Nếu trả về OK tức là chiếm ghế thành công trong 5 phút. Nếu trả về null tức là đã bị người khác nhanh tay bấm giữ trước, bắn lỗi 400 về chặn luồng đặt của khách sau.3. Phân hệ Máy Bay & Tàu Hỏa (Thuật toán Sinh dữ liệu động Just-In-Time)Ý tưởng giải pháp: Giải phóng MySQL khỏi việc lưu trữ hàng ngàn chuyến bay/chuyến tàu giả lập trống trải không ai đặt. Tận dụng sức mạnh tính toán của JavaScript để vẽ dữ liệu động theo mốc ngày khách tìm kiếm.Hướng đi logic code Node.js:API Tìm kiếm (GET /flights/search hoặc /trains/search): Nhận tham số ngày date từ Client. Không query MySQL mà chạy vòng lặp lặp 20 lần dựa trên ma trận khung giờ (05:15, 08:30, 14:00...) phối hợp toán tử chia lấy dư (%) để xoay vòng gán tên các hãng bay (Vietnam Airlines, VietJet Air...).Thuật toán định danh chuỗi: Mã hóa trường trip_id trả về dạng một chuỗi văn bản đặc biệt: MOCKFLIGHT|Mã_Chuyến|Điểm_Đi|Điểm_Đến|Ngày_Đi|Giờ_Đi.API Thanh toán hóa đơn (POST /bookings/checkout): Khi khách bấm mua chiếc vé máy bay tự sinh đó, Backend nhận chuỗi trip_id ảo này, thực hiện hàm split('|'). Chạy câu lệnh kiểm tra xem chuyến đi vãng lai này đã được tạo bản ghi vật lý trong bảng trips của MySQL chưa. Nếu chưa có $\rightarrow$ Gọi lệnh INSERT INTO trips... ngay lập tức để Vật lý hóa chuyến đi đó lấy ID số nguyên thật (insertId), rồi mới tiếp tục ghi hóa đơn vào bảng bookings và tickets.4. Ràng buộc Nhập liệu và An ninh (Passenger KYC Constraints)Ý tưởng giải pháp: Xây dựng Middleware validation (Joi hoặc Express-validator) để kiểm soát chặt chẽ mảng thông tin hành khách đi cùng tùy theo phương tiện:Xe khách: Cho phép co giãn tối đa. Toàn bộ mảng vé con được phép để trống Số CCCD và Email (ALLOW NULL), tự động lấy thông tin người đặt hộ đè lên tên vé con để tài xế dễ gọi điện gom khách tại bến xe.Tàu hỏa: Chặn nghiêm ngặt ngay tại Controller, bắt buộc kiểm tra từng Object vé con phải có đủ tên và Số căn cước công dân (passenger_id_card NOT NULL) nhằm đối chiếu căn cước tại cửa soát vé ga tàu.Máy bay: Ép buộc kiểm tra điều kiện đầu vào phải có đủ Email độc lập cho từng ghế con (passenger_email NOT NULL) để hệ thống kích hoạt hàm tự động bắn file PDF Vé điện tử (E-ticket) về hòm thư riêng của từng hành khách.5. Phân hệ Hoàn tiền & Chống gian lận Đánh giá (Post-Trip Workflow)Hoàn tiền Ví ảo: Khi khách hàng gửi yêu cầu hủy vé và được tài khoản Admin duyệt (Approved), kích hoạt một MySQL Transaction thực hiện hoàn tiền bằng cách chạy lệnh UPDATE users SET wallet_balance = wallet_balance + số_tiền. Giúp chứng minh luồng tài chính khép kín mà không cần cài cổng thanh toán ngân hàng thật phức tạp.Chống đánh giá khống: Do bảng feedbacks thiết lập trường ticket_id có thuộc tính UNIQUE, Backend khi nhận đánh giá chỉ cần gọi lệnh INSERT. Nếu khách hàng cố tình dùng các công cụ như Postman để gọi lặp lại API review cho cùng một chiếc vé, MySQL sẽ chủ động chặn đứng hành vi và ném ra lỗi trùng lập khóa, đảm bảo độ sạch hoàn hảo cho dữ liệu báo cáo đồ án.
