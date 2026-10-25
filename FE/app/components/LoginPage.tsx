@@ -1,21 +1,21 @@
 import axios from 'axios';
 import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Mail, Lock, AlertCircle, User, Briefcase, Shield } from 'lucide-react';
+import { User, Lock, ArrowLeft } from 'lucide-react';
 import { login } from '@/api';
 import { GoogleLogin } from '@react-oauth/google';
 import { toast } from 'sonner'; // Dùng luôn sonner để thông báo cho đồng bộ
 export default function LoginPage() {
   const navigate = useNavigate();
   const [formData, setFormData] = useState({
-    email: '',
+    identifier: '',
     password: '',
     rememberMe: false,
   });
   useEffect(() => {
-    const savedEmail = localStorage.getItem('rememberedEmail');
-    if (savedEmail) {
-      setFormData(prev => ({ ...prev, email: savedEmail, rememberMe: true }));
+    const savedIdentifier = localStorage.getItem('rememberedEmail');
+    if (savedIdentifier) {
+      setFormData(prev => ({ ...prev, identifier: savedIdentifier, rememberMe: true }));
     }
   }, []);
 
@@ -44,19 +44,13 @@ const processLoginResponse = (data: any, route?: string) => {
 
   // Xử lý Remember Me
   if (formData.rememberMe) {
-    localStorage.setItem('rememberedEmail', formData.email);
+    localStorage.setItem('rememberedEmail', formData.identifier);
   } else {
     localStorage.removeItem('rememberedEmail');
   }
 
   // Điều hướng theo vai trò
-  const targetRoute =
-    route ||
-    (user.role === 'Customer'
-      ? '/'
-      : user.role === 'Partner'
-        ? '/merchant'
-        : '/admin');
+  const targetRoute = route || (user.role === 'Admin' ? '/admin' : '/');
 
   navigate(targetRoute);
 };
@@ -95,7 +89,7 @@ const processLoginResponse = (data: any, route?: string) => {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const response = await login({ email: formData.email, password: formData.password });
+      const response = await login({ identifier: formData.identifier, password: formData.password });
 
       if (response.data.success) {
         processLoginResponse(response.data);
@@ -106,10 +100,10 @@ const processLoginResponse = (data: any, route?: string) => {
     }
   };
 
-  const handleDemoLogin = async (email: string, password: string, route: string) => {
-    setFormData({ email, password, rememberMe: false });
+  const handleDemoLogin = async (identifier: string, password: string, route: string) => {
+    setFormData({ identifier, password, rememberMe: false });
     try {
-      const response = await login({ email, password });
+      const response = await login({ identifier, password });
       if (response.data.success) {
         processLoginResponse(response.data, route);
       }
@@ -121,6 +115,14 @@ const processLoginResponse = (data: any, route?: string) => {
 
   return (
     <div className="min-h-screen flex">
+      <button
+        type="button"
+        onClick={() => navigate('/')}
+        className="fixed left-5 top-5 z-50 inline-flex items-center gap-2 rounded-full border border-blue-100 bg-white/95 px-4 py-2 text-sm font-semibold text-blue-800 shadow-lg transition hover:bg-blue-50"
+      >
+        <ArrowLeft className="h-4 w-4" />
+        Về trang chủ
+      </button>
       <div className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-primary to-blue-900 items-center justify-center p-12">
         <div className="max-w-md text-white">
           <div className="mb-8">
@@ -184,14 +186,19 @@ const processLoginResponse = (data: any, route?: string) => {
 
           <form onSubmit={handleLogin} className="space-y-6">
             <div>
-              <label className="block text-sm mb-2 text-foreground">Email / Tên đăng nhập</label>
+              <label htmlFor="login-identifier" className="block text-sm mb-2 text-foreground">
+                Username hoặc email
+              </label>
               <div className="relative">
-                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+                <User className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
                 <input
-                  type="email"
-                  value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  placeholder="your.email@example.com"
+                  id="login-identifier"
+                  type="text"
+                  name="username"
+                  autoComplete="username"
+                  value={formData.identifier}
+                  onChange={(e) => setFormData({ ...formData, identifier: e.target.value })}
+                  placeholder="Nhập username hoặc email"
                   className="w-full pl-10 pr-4 py-3 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary bg-input-background"
                   required
                 />

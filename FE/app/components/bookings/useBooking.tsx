@@ -14,40 +14,19 @@ export interface PassengerInfo {
   name: string;
   price: number;
 
-  // Xe khách / tàu hỏa
   seatId?: number;
-
-  // Tàu hỏa
-  idCard?: string;
-
-  // Tàu hỏa / máy bay
   phone?: string;
   email?: string;
-
-  // Máy bay
-  gender?: string;
-  dob?: string;
-  type?: 'Adult' | 'Child' | 'Infant';
-  luggage?: string;
 }
 
 /*
  * Payload gửi tới API xác nhận booking.
  */
 export interface BookingPayload {
-  tripId: number | string;
+  tripId: number;
+  vehicleType: 'Bus';
 
-  vehicleType:
-    | 'Bus'
-    | 'Train'
-    | 'Flight';
-
-  seatIds?: number[];
-
-  /*
-   * Dành cho máy bay.
-   */
-  classId?: number;
+  seatIds: number[];
 
   contactInfo: {
     fullName: string;
@@ -248,8 +227,7 @@ export function useBooking() {
 
 /*
  * Export lại searchTrips để các trang
- * BusBooking, TrainBooking và FlightBooking
- * tiếp tục sử dụng như trước.
+ * BusBooking continues to use this API.
  */
 export const searchTrips =
   apiSearchTrips;

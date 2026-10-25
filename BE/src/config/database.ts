@@ -7,7 +7,7 @@ const pool = mysql.createPool({
   password: process.env.DB_PASSWORD || '140220',
   database:
     process.env.DB_NAME ||
-    'transport_booking_db',
+    'booking',
 
   waitForConnections: true,
   connectionLimit: 10,
@@ -47,3 +47,5 @@ export async function executeQuery<T extends RowDataPacket[] | OkPacket | Result
 }
 
 export default pool;
+
+//vietgo-admin - adminadmin123

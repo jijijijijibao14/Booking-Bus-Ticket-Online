@@ -4,8 +4,7 @@ import adminService from './admin.service.js';
 export class AdminController {
   getSchedules = async (req: Request, res: Response): Promise<void> => {
     try {
-      const type = req.query.type as string; // Sẽ nhận 'Train' hoặc 'Flight' từ Frontend
-      const schedules = await adminService.getAdminSchedules(type);
+      const schedules = await adminService.getAdminSchedules();
       res.status(200).json({ success: true, data: schedules });
     } catch (error: any) {
       res.status(500).json({ success: false, message: error.message });
@@ -14,8 +13,7 @@ export class AdminController {
 
   getFleet = async (req: Request, res: Response): Promise<void> => {
     try {
-      const type = req.query.type as string;
-      const fleet = await adminService.getAdminFleet(type);
+      const fleet = await adminService.getAdminFleet();
       res.status(200).json({ success: true, data: fleet });
     } catch (error: any) {
       res.status(500).json({ success: false, message: error.message });

@@ -1,5 +1,5 @@
 import { useLocation, useNavigate } from 'react-router-dom';
-import { CheckCircle, Download, Share2, Bus, Train, Plane, Calendar, MapPin, User, CreditCard } from 'lucide-react';
+import { CheckCircle, Download, Share2, Bus, Calendar, MapPin, User, CreditCard } from 'lucide-react';
 import { useRef, useEffect, useState } from 'react';
 import { toPng } from 'html-to-image';
 
@@ -18,21 +18,11 @@ export default function BookingSuccess() {
   const bookingDate = new Date().toLocaleDateString('vi-VN');
 
   const getIcon = () => {
-    switch (bookingData.type) {
-      case 'bus': return <Bus className="w-8 h-8" />;
-      case 'train': return <Train className="w-8 h-8" />;
-      case 'flight': return <Plane className="w-8 h-8" />;
-      default: return <Bus className="w-8 h-8" />;
-    }
+    return <Bus className="w-8 h-8" />;
   };
 
   const getTitle = () => {
-    switch (bookingData.type) {
-      case 'bus': return 'Vé Xe Khách';
-      case 'train': return 'Vé Tàu Hỏa';
-      case 'flight': return 'Vé Máy Bay';
-      default: return 'Vé';
-    }
+    return 'Vé Xe Khách';
   };
 
   useEffect(() => {
@@ -122,37 +112,13 @@ export default function BookingSuccess() {
                 </div>
               )}
 
-              {bookingData.type === 'train' && (
-                <div>
-                  <div className="flex items-center gap-2 text-muted-foreground mb-2">
-                    <Train className="w-4 h-4" />
-                    <span className="text-sm">Tàu</span>
-                  </div>
-                  <p className="font-semibold">{bookingData.trip?.name || 'N/A'}</p>
-                </div>
-              )}
-
-              {bookingData.type === 'flight' && (
-                <div>
-                  <div className="flex items-center gap-2 text-muted-foreground mb-2">
-                    <Plane className="w-4 h-4" />
-                    <span className="text-sm">Hãng bay</span>
-                  </div>
-                  <p className="font-semibold">
-                    {bookingData.trip?.airline || 'N/A'} - {bookingData.trip?.flightCode || ''}
-                  </p>
-                </div>
-              )}
-
               <div>
                 <div className="flex items-center gap-2 text-muted-foreground mb-2">
                   <User className="w-4 h-4" />
-                  <span className="text-sm">{bookingData.type === 'flight' ? 'Số hành khách' : 'Ghế/Chỗ'}</span>
+                  <span className="text-sm">Ghế</span>
                 </div>
                 <p className="font-semibold">
-                  {bookingData.type === 'flight'
-                    ? `${bookingData.passengers} người`
-                    : bookingData.seats?.join(', ') || 'N/A'}
+                  {bookingData.seats?.join(', ') || 'N/A'}
                 </p>
               </div>
 

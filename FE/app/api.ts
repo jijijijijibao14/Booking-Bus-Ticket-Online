@@ -260,6 +260,20 @@ export const deleteMerchantSchedule = (
   );
 };
 
+export const previewRecurringSchedule = (data: Record<string, unknown>) =>
+  apiClient.post('/merchant/schedules/recurring/preview', data);
+
+export const createRecurringSchedule = (data: Record<string, unknown>) =>
+  apiClient.post('/merchant/schedules/recurring', data);
+
+export const getRecurringScheduleTemplates = () =>
+  apiClient.get('/merchant/schedule-templates');
+
+export const setRecurringScheduleTemplateStatus = (
+  id: number,
+  status: 'Active' | 'Paused',
+) => apiClient.patch(`/merchant/schedule-templates/${id}/status`, { status });
+
 export const getMerchantFleet =
   () => {
     return apiClient.get(
@@ -402,18 +416,8 @@ export const processMerchantApproval = (
   );
 };
 
-export const getAdminSchedules = (
-  type: 'Train' | 'Flight',
-) => {
-  return apiClient.get(
-    '/admin/schedules',
-    {
-      params: {
-        type,
-      },
-    },
-  );
-};
+export const getAdminSchedules = () =>
+  apiClient.get('/admin/schedules');
 
 export const getWaitingRefunds = () => {
   return apiClient.get('/admin/refunds/waiting');
@@ -428,15 +432,35 @@ export const processAdminRefund = (
 
 
 
-export const getAdminFleet = (
-  type: 'Train' | 'Flight',
-) => {
-  return apiClient.get(
-    '/admin/fleet',
-    {
-      params: {
-        type,
-      },
-    },
-  );
-};
+export const getAdminFleet = () =>
+  apiClient.get('/admin/fleet');
+
+export const getChatPartners = () =>
+  apiClient.get('/communications/partners');
+
+export const getConversations = () =>
+  apiClient.get('/communications/conversations');
+
+export const openConversation = (data: { type: 'partner' | 'support'; partnerId?: number }) =>
+  apiClient.post('/communications/conversations', data);
+
+export const getConversationMessages = (conversationId: number) =>
+  apiClient.get(`/communications/conversations/${conversationId}/messages`);
+
+export const sendConversationMessage = (conversationId: number, messageText: string) =>
+  apiClient.post(`/communications/conversations/${conversationId}/messages`, { messageText });
+
+export const getEligibleFeedbackTickets = () =>
+  apiClient.get('/feedback/eligible');
+
+export const submitTripFeedback = (
+  ticketId: number,
+  data: { ratingSeats: number; ratingService: number; comment: string },
+) =>
+  apiClient.post(`/feedback/${ticketId}`, data);
+
+export const getMerchantFeedback = () =>
+  apiClient.get('/merchant/feedback');
+
+export const replyToFeedback = (feedbackId: number, reply: string) =>
+  apiClient.post(`/merchant/feedback/${feedbackId}/reply`, { reply });

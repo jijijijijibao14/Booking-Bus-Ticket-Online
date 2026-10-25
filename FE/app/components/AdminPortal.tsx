@@ -10,23 +10,17 @@ import {
   Building2,
   Percent,
   Clock,
-  Train,
-  Plane,
-  Plus,
-  Calendar,
-  Users,
-  AlertCircle,
+  MessageCircle,
 } from 'lucide-react';
 import {
   getMerchantApprovals,
   processMerchantApproval,
-  getAdminSchedules,
-  getAdminFleet,
   getWaitingRefunds,
   processAdminRefund,
 } from '@/api';
+import ConversationInbox from './communications/ConversationInbox';
 
-type Tab = 'overview' | 'approvals' | 'commission' | 'refunds' | 'trains' | 'flights';
+type Tab = 'overview' | 'approvals' | 'commission' | 'refunds' | 'messages';
 
 interface MerchantApproval {
   id: string;
@@ -57,8 +51,6 @@ export default function AdminPortal() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<Tab>('overview');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [trainSubTab, setTrainSubTab] = useState<'schedule' | 'fleet'>('schedule');
-  const [flightSubTab, setFlightSubTab] = useState<'schedule' | 'fleet'>('schedule');
 
   const [merchantApprovals, setMerchantApprovals] = useState<MerchantApproval[]>([]);
 
@@ -66,44 +58,19 @@ export default function AdminPortal() {
 
   const [commissionRate, setCommissionRate] = useState(15);
 
-  // DỮ LIỆU THẬT TỪ DATABASE
-  const [trainsList, setTrainsList] = useState<any[]>([]);
-  const [trainSchedules, setTrainSchedules] = useState<any[]>([]);
-  const [aircraftsList, setAircraftsList] = useState<any[]>([]);
-  const [flightSchedules, setFlightSchedules] = useState<any[]>([]);
-
-
   useEffect(() => {
     // Hàm Format dữ liệu Backend trả về cho khớp với cấu trúc UI
-    const formatSchedules = (data: any[]) => data.map((item) => {
-      const depDate = new Date(item.departure_time);
-      return {
-        id: item.trip_id,
-        route: `${item.departure_location} - ${item.arrival_location}`,
-        train: item.vehicle_name,
-        aircraft: item.vehicle_name,
-        departure: depDate.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
-        date: depDate.toLocaleDateString('vi-VN'),
-        basePrice: Number(item.base_price),
-        bookings: 'N/A', // Sẽ JOIN để đếm lượng vé sau
-        passengers: 'N/A',
-      };
-    });
-
-    const formatFleet = (data: any[]) => data.map((item) => ({
-      id: item.vehicle_id,
-      name: item.vehicle_name,
-      type: item.vehicle_name,
-      capacity: 'N/A',
-      status: 'active',
-    }));
-
     const fetchApprovals = () => {
       getMerchantApprovals()
         .then((res: any) => {
           if (res.data.success) {
             const formattedData = res.data.data.map((merchant: any) => ({
               ...merchant,
+              status: merchant.status === 'Pending Approval'
+                ? 'pending'
+                : merchant.status === 'Active'
+                  ? 'approved'
+                  : 'rejected',
               submittedDate: new Date(merchant.submittedDate).toLocaleDateString('vi-VN'),
               fleetSize: 0, // Dữ liệu này chưa có trong DB, sẽ bổ sung sau
               routes: [], // Dữ liệu này chưa có trong DB, sẽ bổ sung sau
@@ -128,23 +95,7 @@ export default function AdminPortal() {
       status: item.status === 'WaitRefund' ? 'pending' : item.status.toLowerCase(),
     }));
 
-    if (activeTab === 'trains') {
-      getAdminSchedules('Train').then((res: any) => {
-        if (res.data.success) setTrainSchedules(formatSchedules(res.data.data));
-      }).catch((err: any) => console.error("Lỗi tải lịch trình tàu:", err));
-      
-      getAdminFleet('Train').then((res: any) => {
-        if (res.data.success) setTrainsList(formatFleet(res.data.data));
-      }).catch((err: any) => console.error("Lỗi tải toa xe:", err));
-    } else if (activeTab === 'flights') {
-      getAdminSchedules('Flight').then((res: any) => {
-        if (res.data.success) setFlightSchedules(formatSchedules(res.data.data));
-      }).catch((err: any) => console.error("Lỗi tải lịch trình bay:", err));
-      
-      getAdminFleet('Flight').then((res: any) => {
-        if (res.data.success) setAircraftsList(formatFleet(res.data.data));
-      }).catch((err: any) => console.error("Lỗi tải tàu bay:", err));
-    } else if (activeTab === 'approvals') {
+    if (activeTab === 'approvals') {
       fetchApprovals();
     } else if (activeTab === 'refunds') {
       getWaitingRefunds()
@@ -196,8 +147,7 @@ export default function AdminPortal() {
     { id: 'approvals' as Tab, label: 'Duyệt Đối Tác', icon: Building2 },
     { id: 'commission' as Tab, label: 'Cấu Hình Hoa Hồng', icon: Percent },
     { id: 'refunds' as Tab, label: 'Hoàn Tiền', icon: RefreshCw },
-    { id: 'trains' as Tab, label: 'Quản lý Đường sắt', icon: Train },
-    { id: 'flights' as Tab, label: 'Quản lý Hàng không', icon: Plane },
+    { id: 'messages' as Tab, label: 'Tin Nhắn', icon: MessageCircle },
   ];
 
   const pendingMerchants = merchantApprovals.filter((m) => m.status === 'pending').length;
@@ -639,167 +589,8 @@ export default function AdminPortal() {
             </>
           )}
 
-        {activeTab === 'trains' && (
-          <div className="animate-in fade-in duration-300">
-            <div className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div>
-                <h2 className="text-2xl font-bold text-foreground mb-2">Quản lý Đường Sắt (VNR)</h2>
-                <p className="text-muted-foreground">Điều phối chuyến tàu và quản lý toa xe toàn hệ thống</p>
-              </div>
-              <div className="flex bg-white rounded-lg p-1 border border-border w-fit">
-                <button onClick={() => setTrainSubTab('schedule')} className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${trainSubTab === 'schedule' ? 'bg-primary text-primary-foreground shadow' : 'hover:bg-slate-100 text-slate-600'}`}>Lịch Trình Tàu</button>
-                <button onClick={() => setTrainSubTab('fleet')} className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${trainSubTab === 'fleet' ? 'bg-primary text-primary-foreground shadow' : 'hover:bg-slate-100 text-slate-600'}`}>Quản lý Toa Xe</button>
-              </div>
-            </div>
+          {activeTab === 'messages' && <ConversationInbox role="Admin" />}
 
-            {trainSubTab === 'schedule' ? (
-              <div className="bg-white rounded-xl border border-border overflow-hidden mb-6">
-                <div className="p-4 border-b border-border flex justify-between items-center bg-muted/50">
-                  <h3 className="font-semibold">Danh sách Mác Tàu</h3>
-                  <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary text-secondary-foreground text-sm hover:opacity-90">
-                    <Plus className="w-4 h-4" /> Tạo Chuyến
-                  </button>
-                </div>
-                <table className="w-full">
-                  <thead className="bg-muted border-b border-border">
-                    <tr>
-                      <th className="text-left p-4 font-semibold text-sm">Tuyến Đường</th>
-                      <th className="text-left p-4 font-semibold text-sm">Mác Tàu</th>
-                      <th className="text-left p-4 font-semibold text-sm">Giờ Đi</th>
-                      <th className="text-left p-4 font-semibold text-sm">Số Khách</th>
-                      <th className="text-left p-4 font-semibold text-sm">Giá Gốc</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {trainSchedules.map((schedule) => (
-                      <tr key={schedule.id} className="border-b border-border hover:bg-muted/50">
-                        <td className="p-4 font-semibold">{schedule.route}</td>
-                        <td className="p-4 font-mono text-sm">{schedule.train}</td>
-                        <td className="p-4">{schedule.departure} - {schedule.date}</td>
-                        <td className="p-4"><span className="px-3 py-1 rounded-full bg-primary/10 text-primary text-xs">{schedule.bookings}</span></td>
-                        <td className="p-4 font-semibold">{schedule.basePrice.toLocaleString()}₫</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="bg-white rounded-xl border border-border overflow-hidden">
-                <div className="p-4 border-b border-border flex justify-between items-center bg-muted/50">
-                  <h3 className="font-semibold">Quản lý Đầu máy & Toa xe</h3>
-                  <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-sm hover:opacity-90">
-                    <Plus className="w-4 h-4" /> Thêm Thiết Bị
-                  </button>
-                </div>
-                <table className="w-full">
-                  <thead className="bg-muted border-b border-border">
-                    <tr>
-                      <th className="text-left p-4 font-semibold text-sm">ID</th>
-                      <th className="text-left p-4 font-semibold text-sm">Tên/Số Hiệu</th>
-                      <th className="text-left p-4 font-semibold text-sm">Phân Loại</th>
-                      <th className="text-left p-4 font-semibold text-sm">Trạng Thái</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {trainsList.map((train) => (
-                      <tr key={train.id} className="border-b border-border hover:bg-muted/50">
-                        <td className="p-4 font-mono text-sm">{train.id}</td>
-                        <td className="p-4 font-semibold">{train.name}</td>
-                        <td className="p-4">{train.type}</td>
-                        <td className="p-4">
-                          <span className={`px-3 py-1 rounded-full text-xs ${train.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
-                            {train.status === 'active' ? 'Hoạt động' : 'Bảo trì'}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
-
-        {activeTab === 'flights' && (
-          <div className="animate-in fade-in duration-300">
-            <div className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div>
-                <h2 className="text-2xl font-bold text-foreground mb-2">Quản lý Hàng Không</h2>
-                <p className="text-muted-foreground">Module quản lý hệ thống máy bay tập trung</p>
-              </div>
-              <div className="flex bg-white rounded-lg p-1 border border-border w-fit">
-                <button onClick={() => setFlightSubTab('schedule')} className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${flightSubTab === 'schedule' ? 'bg-primary text-primary-foreground shadow' : 'hover:bg-slate-100 text-slate-600'}`}>Lịch Bay</button>
-                <button onClick={() => setFlightSubTab('fleet')} className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${flightSubTab === 'fleet' ? 'bg-primary text-primary-foreground shadow' : 'hover:bg-slate-100 text-slate-600'}`}>Đội Bay</button>
-              </div>
-            </div>
-
-            {flightSubTab === 'schedule' ? (
-              <div className="bg-white rounded-xl border border-border overflow-hidden mb-6">
-                <div className="p-4 border-b border-border flex justify-between items-center bg-muted/50">
-                  <h3 className="font-semibold">Danh sách Chuyến Bay</h3>
-                  <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary text-secondary-foreground text-sm hover:opacity-90">
-                    <Plus className="w-4 h-4" /> Tạo Chuyến Bay
-                  </button>
-                </div>
-                <table className="w-full">
-                  <thead className="bg-muted border-b border-border">
-                    <tr>
-                      <th className="text-left p-4 font-semibold text-sm">Mã Chuyến</th>
-                      <th className="text-left p-4 font-semibold text-sm">Chặng Bay</th>
-                      <th className="text-left p-4 font-semibold text-sm">Tàu Bay</th>
-                      <th className="text-left p-4 font-semibold text-sm">Giờ Đi</th>
-                      <th className="text-left p-4 font-semibold text-sm">Khách</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {flightSchedules.map((flight) => (
-                      <tr key={flight.id} className="border-b border-border hover:bg-muted/50">
-                        <td className="p-4 font-semibold font-mono text-primary">{flight.id}</td>
-                        <td className="p-4 font-medium">{flight.route}</td>
-                        <td className="p-4 font-mono text-sm">{flight.aircraft}</td>
-                        <td className="p-4">{flight.departure} - {flight.date}</td>
-                        <td className="p-4"><span className="px-3 py-1 rounded-full bg-primary/10 text-primary text-xs">{flight.passengers}</span></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="bg-white rounded-xl border border-border overflow-hidden">
-                <div className="p-4 border-b border-border flex justify-between items-center bg-muted/50">
-                  <h3 className="font-semibold">Quản lý Tàu Bay</h3>
-                  <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-sm hover:opacity-90">
-                    <Plus className="w-4 h-4" /> Thêm Tàu Bay
-                  </button>
-                </div>
-                <table className="w-full">
-                  <thead className="bg-muted border-b border-border">
-                    <tr>
-                      <th className="text-left p-4 font-semibold text-sm">Số Đăng Ký</th>
-                      <th className="text-left p-4 font-semibold text-sm">Loại Máy Bay</th>
-                      <th className="text-left p-4 font-semibold text-sm">Sức Chứa</th>
-                      <th className="text-left p-4 font-semibold text-sm">Trạng Thái</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {aircraftsList.map((ac) => (
-                      <tr key={ac.id} className="border-b border-border hover:bg-muted/50">
-                        <td className="p-4 font-mono font-semibold text-sm text-primary">{ac.id}</td>
-                        <td className="p-4">{ac.type}</td>
-                        <td className="p-4">{ac.capacity} ghế</td>
-                        <td className="p-4">
-                          <span className={`px-3 py-1 rounded-full text-xs ${ac.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
-                            {ac.status === 'active' ? 'Khai thác' : 'Bảo dưỡng'}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
         </div>
       </main>
     </div>

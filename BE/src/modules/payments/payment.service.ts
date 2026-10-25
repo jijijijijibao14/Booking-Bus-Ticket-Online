@@ -695,9 +695,8 @@ export class PaymentService {
           }
 
           /*
-           * Xe khách và tàu hỏa:
-           * booking service đã đổi ghế thành Booked trước khi thanh toán,
-           * nên khi VNPAY thất bại phải trả ghế về Available.
+           * Booking đã khóa ghế trước khi thanh toán VNPAY;
+           * khi giao dịch thất bại, phải trả các ghế này về Available.
            */
           await connection.query(
             `
@@ -716,40 +715,6 @@ export class PaymentService {
             [paymentOrderId],
           );
 
-          /*
-           * Máy bay:
-           * cộng lại số chỗ đã trừ khi booking được tạo.
-           */
-          await connection.query(
-            `
-              UPDATE flight_ticket_classes ftc
-              INNER JOIN (
-                SELECT
-                  t.class_id,
-                  COUNT(t.ticket_id) AS quantity
-                FROM tickets t
-                INNER JOIN payment_order_items poi
-                  ON poi.booking_id = t.booking_id
-                INNER JOIN bookings b
-                  ON b.booking_id = t.booking_id
-                WHERE poi.payment_order_id = ?
-                  AND b.payment_status = 'Pending'
-                  AND t.class_id IS NOT NULL
-                GROUP BY t.class_id
-              ) released
-                ON released.class_id = ftc.class_id
-              SET ftc.available_slots = LEAST(
-                ftc.total_slots,
-                ftc.available_slots + released.quantity
-              )
-            `,
-            [paymentOrderId],
-          );
-
-          /*
-           * Booking chưa thu tiền phải là Cancelled,
-           * không dùng Refunded.
-           */
           await connection.query(
             `
               UPDATE bookings b
@@ -813,27 +778,6 @@ export class PaymentService {
                 SET s.status = 'Available'
                 WHERE t.booking_id = ?
                   AND s.status = 'Booked'
-              `,
-              [bookingId],
-            );
-
-            await connection.query(
-              `
-                UPDATE flight_ticket_classes ftc
-                INNER JOIN (
-                  SELECT
-                    class_id,
-                    COUNT(ticket_id) AS quantity
-                  FROM tickets
-                  WHERE booking_id = ?
-                    AND class_id IS NOT NULL
-                  GROUP BY class_id
-                ) released
-                  ON released.class_id = ftc.class_id
-                SET ftc.available_slots = LEAST(
-                  ftc.total_slots,
-                  ftc.available_slots + released.quantity
-                )
               `,
               [bookingId],
             );

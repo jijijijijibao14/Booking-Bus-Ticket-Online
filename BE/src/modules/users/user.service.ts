@@ -1,4 +1,5 @@
 import pool from '../../config/database.js';
+import { hashPassword, verifyPassword } from '../auth/password.util.js';
 
 class UserService {
   async getProfile(userId: number) {
@@ -112,7 +113,7 @@ class UserService {
 
       const [users]: any =
         await pool.query(
-          `SELECT password_plain
+          `SELECT password_hash
            FROM users
            WHERE user_id = ?
            LIMIT 1`,
@@ -127,10 +128,7 @@ class UserService {
 
       const currentUser = users[0];
 
-      if (
-        currentUser.password_plain !==
-        old_password
-      ) {
+      if (!(await verifyPassword(old_password, currentUser.password_hash))) {
         throw new Error(
           'Mật khẩu cũ không chính xác.',
         );
@@ -147,8 +145,8 @@ class UserService {
     ];
 
     if (new_password) {
-      query += ', password_plain = ?';
-      params.push(new_password);
+      query += ', password_hash = ?';
+      params.push(await hashPassword(new_password));
     }
 
     query += ' WHERE user_id = ?';

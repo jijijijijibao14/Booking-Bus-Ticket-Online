@@ -7,14 +7,27 @@ export class AuthController {
     
   login = async (req: Request, res: Response): Promise<void> => {
     try {
-      const { email, password } = req.body;
-      console.log(`🚀 Đang thử đăng nhập cho: ${email} với pass: ${password}`);
-      const user = await authService.login(email, password);
+      const { identifier, email, username, password } = req.body;
+      const loginIdentifier = identifier ?? email ?? username;
+      if (
+        typeof loginIdentifier !== 'string' ||
+        !loginIdentifier.trim() ||
+        typeof password !== 'string' ||
+        !password
+      ) {
+        res.status(400).json({
+          success: false,
+          message: 'Vui lòng nhập username hoặc email và mật khẩu.',
+        });
+        return;
+      }
+
+      const user = await authService.login(loginIdentifier, password);
 
       if (!user) {
         res.status(401).json({ 
           success: false, 
-          message: 'Email hoặc mật khẩu không chính xác.' 
+          message: 'Username/email hoặc mật khẩu không chính xác.'
         });
         return;
       }

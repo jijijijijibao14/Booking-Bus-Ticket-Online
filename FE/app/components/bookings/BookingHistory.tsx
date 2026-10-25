@@ -1,17 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Bus, Train, Plane, Ticket, ChevronDown, Loader2, ServerCrash, User, CheckCircle, Archive, XCircle, Clock, Send } from 'lucide-react';
-import { getBookingHistory, requestCancellation } from '@/api'; // Đảm bảo requestCancellation đã được import
+import { Bus, Ticket, ChevronDown, Loader2, ServerCrash, User, CheckCircle, Archive, XCircle, Clock, Send, Star } from 'lucide-react';
+import { getBookingHistory, requestCancellation, submitTripFeedback } from '@/api';
 import { toast } from 'sonner';
 
 const vehicleIcons = {
-  Flight: Plane,
-  Train: Train,
   Bus: Bus,
 };
 
 const vehicleColors = {
-  Flight: 'bg-blue-100 text-blue-600',
-  Train: 'bg-orange-100 text-orange-600',
   Bus: 'bg-emerald-100 text-emerald-600',
 };
 
@@ -23,6 +19,13 @@ export default function BookingHistory() {
   const [activeTab, setActiveTab] = useState<'current' | 'completed' | 'cancelled'>('current');
   const [cancellationModal, setCancellationModal] = useState<{ isOpen: boolean; bookingCode: string | null }>({ isOpen: false, bookingCode: null });
   const [cancellationReason, setCancellationReason] = useState('');
+  const [feedbackForm, setFeedbackForm] = useState<{
+    ticketId: number;
+    ratingSeats: number;
+    ratingService: number;
+    comment: string;
+  } | null>(null);
+  const [savingFeedback, setSavingFeedback] = useState(false);
 
   const fetchHistory = useCallback(async () => {
       try {
@@ -131,6 +134,25 @@ export default function BookingHistory() {
       toast.error('Yêu cầu hủy vé thất bại', { description: err.response?.data?.message || err.message });
     } finally {
       setCancellationModal({ isOpen: false, bookingCode: null });
+    }
+  };
+
+  const handleSubmitFeedback = async () => {
+    if (!feedbackForm) return;
+    setSavingFeedback(true);
+    try {
+      await submitTripFeedback(feedbackForm.ticketId, {
+        ratingSeats: feedbackForm.ratingSeats,
+        ratingService: feedbackForm.ratingService,
+        comment: feedbackForm.comment,
+      });
+      toast.success('Cảm ơn bạn đã đánh giá chuyến đi.');
+      setFeedbackForm(null);
+      await fetchHistory();
+    } catch (err: any) {
+      toast.error('Gửi đánh giá thất bại', { description: err.response?.data?.message || err.message });
+    } finally {
+      setSavingFeedback(false);
     }
   };
 
@@ -280,9 +302,41 @@ export default function BookingHistory() {
                           <User className="w-4 h-4 text-muted-foreground" />
                           <p className="font-medium text-foreground">{ticket.passenger_name}</p>
                         </div>
-                        <p className="font-bold text-primary">{ticket.ticket_price.toLocaleString('vi-VN')}₫</p>
+                        <div className="flex items-center gap-3">
+                          <p className="font-bold text-primary">{Number(ticket.ticket_price).toLocaleString('vi-VN')}₫</p>
+                          {activeTab === 'completed' && new Date(ticket.arrival_time) <= new Date() && (
+                            ticket.feedback_id ? (
+                              <span className="inline-flex items-center gap-1 text-sm text-amber-600" title="Đã đánh giá">
+                                <Star className="h-4 w-4 fill-amber-400 text-amber-400" /> {ticket.rating_seats}/5
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setFeedbackForm({
+                                  ticketId: ticket.ticket_id,
+                                  ratingSeats: 5,
+                                  ratingService: 5,
+                                  comment: '',
+                                })}
+                                className="rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-800 hover:bg-blue-100"
+                              >
+                                Đánh giá
+                              </button>
+                            )
+                          )}
+                        </div>
                       </div>
                     ))}
+                    {booking.tickets.some((ticket: any) => ticket.partner_reply) && (
+                      <div className="space-y-2 px-2">
+                        {booking.tickets.filter((ticket: any) => ticket.partner_reply).map((ticket: any) => (
+                          <div key={`reply-${ticket.ticket_id}`} className="rounded-lg bg-blue-50 p-3 text-sm">
+                            <p className="font-semibold text-blue-800">Phản hồi từ nhà xe</p>
+                            <p className="mt-1 whitespace-pre-wrap text-slate-700">{ticket.partner_reply}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -314,6 +368,48 @@ export default function BookingHistory() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+      {feedbackForm && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4" onClick={() => setFeedbackForm(null)}>
+          <section role="dialog" aria-modal="true" aria-labelledby="feedback-title" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <h3 id="feedback-title" className="text-xl font-bold text-slate-900">Đánh giá chuyến đi</h3>
+            <p className="mt-1 text-sm text-slate-500">Chia sẻ trải nghiệm để nhà xe phục vụ tốt hơn.</p>
+            <div className="my-5 space-y-4">
+              {([
+                { key: 'ratingSeats', label: 'Chất lượng ghế' },
+                { key: 'ratingService', label: 'Chất lượng dịch vụ' },
+              ] as const).map(({ key, label }) => (
+                <div key={key}>
+                  <p className="mb-2 text-center text-sm font-semibold text-slate-700">{label}</p>
+                  <div className="flex justify-center gap-2" role="radiogroup" aria-label={`${label}: chọn số sao`}>
+                    {Array.from({ length: 5 }, (_, index) => {
+                      const rating = index + 1;
+                      return (
+                        <button
+                          key={rating}
+                          type="button"
+                          role="radio"
+                          aria-checked={feedbackForm[key] === rating}
+                          aria-label={`${rating} sao`}
+                          onClick={() => setFeedbackForm((previous) => previous ? { ...previous, [key]: rating } : previous)}
+                        >
+                          <Star className={`h-7 w-7 ${feedbackForm[key] >= rating ? 'fill-amber-400 text-amber-400' : 'text-slate-300'}`} />
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <textarea value={feedbackForm.comment} onChange={(event) => setFeedbackForm((previous) => previous ? { ...previous, comment: event.target.value } : previous)} maxLength={2000} rows={4} placeholder="Nhận xét của bạn..." className="w-full rounded-xl border border-blue-100 p-3 text-sm outline-none focus:border-blue-500" />
+            <div className="mt-4 flex justify-end gap-3">
+              <button type="button" onClick={() => setFeedbackForm(null)} className="rounded-lg border px-4 py-2 text-sm font-semibold">Để sau</button>
+              <button type="button" onClick={handleSubmitFeedback} disabled={savingFeedback} className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
+                {savingFeedback ? 'Đang gửi...' : 'Gửi đánh giá'}
+              </button>
+            </div>
+          </section>
         </div>
       )}
     </div>

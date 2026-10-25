@@ -3,10 +3,10 @@
 export interface UserModel {
   user_id?: number;
   username: string;
-  password_plain: string; // Lưu text thô để chấm bài/demo trực quan
+  password_hash: string | null;
   email: string;
   full_name: string;
-  phone: string;
+  phone: string | null;
   role: 'Customer' | 'Partner' | 'Admin';
   wallet_balance?: number;
   created_at?: Date;

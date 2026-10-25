@@ -1,7 +1,7 @@
 import pool from '../../config/database.js';
 
 class AdminService {
-  async getAdminSchedules(vehicleType: string) {
+  async getAdminSchedules() {
     const [rows] = await pool.query(`
       SELECT t.trip_id, t.departure_time, t.arrival_time, t.base_price,
              v.vehicle_name, v.vehicle_type,
@@ -9,43 +9,71 @@ class AdminService {
       FROM trips t
       JOIN vehicles v ON t.vehicle_id = v.vehicle_id
       JOIN routes r ON t.route_id = r.route_id
-      WHERE v.vehicle_type = ?
+      WHERE v.vehicle_type = 'Bus'
       ORDER BY t.departure_time ASC
-    `, [vehicleType]);
+    `);
     return rows;
   }
 
-  async getAdminFleet(vehicleType: string) {
+  async getAdminFleet() {
     const [rows] = await pool.query(`
-      SELECT * FROM vehicles WHERE vehicle_type = ?
-    `, [vehicleType]);
+      SELECT * FROM vehicles WHERE vehicle_type = 'Bus'
+    `);
     return rows;
   }
 
   async getPendingMerchants() {
     const [rows] = await pool.query(`
       SELECT 
-        user_id as id, 
-        company_name as companyName, 
-        full_name as contactPerson,
-        email,
-        phone,
-        created_at as submittedDate,
-        status
-      FROM users
-      WHERE role = 'Partner' AND status = 'Pending Approval'
-      ORDER BY created_at DESC
+        u.user_id as id,
+        COALESCE(p.brand_name, u.full_name) as companyName,
+        u.full_name as contactPerson,
+        u.email,
+        u.phone,
+        u.created_at as submittedDate,
+        u.status
+      FROM users u
+      LEFT JOIN partner_profiles p ON p.partner_id = u.user_id
+      WHERE u.role = 'Partner' AND u.status = 'Pending Approval'
+      ORDER BY u.created_at DESC
     `);
     return rows;
   }
 
   async handleMerchantAction(merchantId: number, action: 'approve' | 'reject') {
     const newStatus = action === 'approve' ? 'Active' : 'Rejected';
-    const [result]: any = await pool.query(
-      `UPDATE users SET status = ? WHERE user_id = ? AND role = 'Partner'`,
-      [newStatus, merchantId]
-    );
-    return result.affectedRows > 0;
+    const connection = await pool.getConnection();
+
+    try {
+      await connection.beginTransaction();
+
+      const [result]: any = await connection.query(
+        `UPDATE users
+         SET status = ?
+         WHERE user_id = ? AND role = 'Partner'`,
+        [newStatus, merchantId],
+      );
+
+      if (result.affectedRows === 0) {
+        await connection.rollback();
+        return false;
+      }
+
+      await connection.query(
+        `UPDATE partner_profiles
+         SET is_approved = ?
+         WHERE partner_id = ?`,
+        [action === 'approve', merchantId],
+      );
+
+      await connection.commit();
+      return true;
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
   }
 
   async getWaitingRefunds() {
@@ -71,8 +99,7 @@ class AdminService {
          LEFT JOIN partner_profiles p ON r.partner_id = p.partner_id
          LEFT JOIN tickets tk ON b.booking_id = tk.booking_id
          LEFT JOIN seats s ON tk.seat_id = s.seat_id
-         LEFT JOIN flight_ticket_classes ftc ON tk.class_id = ftc.class_id
-         JOIN trips tr ON tr.trip_id = COALESCE(s.trip_id, ftc.trip_id)
+         JOIN trips tr ON tr.trip_id = s.trip_id
          JOIN routes rt ON tr.route_id = rt.route_id
          WHERE r.status = 'WaitRefund'
          GROUP BY r.refund_id
@@ -95,17 +122,10 @@ class AdminService {
       const [refundRows]: any = await conn.query(
         `SELECT 
             r.status, r.refund_amount, r.booking_id,
-            b.user_id, b.booking_code,
-            v.vehicle_type
+            b.user_id, b.booking_code
          FROM refund_requests r
          JOIN bookings b ON r.booking_id = b.booking_id
-         JOIN tickets tk ON b.booking_id = tk.booking_id
-         LEFT JOIN seats s ON tk.seat_id = s.seat_id
-         LEFT JOIN flight_ticket_classes ftc ON tk.class_id = ftc.class_id
-         JOIN trips tr ON tr.trip_id = COALESCE(s.trip_id, ftc.trip_id)
-         JOIN vehicles v ON tr.vehicle_id = v.vehicle_id
          WHERE r.refund_id = ?
-         GROUP BY r.refund_id, b.user_id, b.booking_code, v.vehicle_type
          FOR UPDATE`,
         [refundId]
       );
@@ -144,15 +164,18 @@ class AdminService {
       await conn.query(`INSERT INTO wallet_transactions (user_id, booking_id, transaction_type, amount, balance_before, balance_after, reference_code, description) VALUES (?, ?, 'REFUND', ?, ?, ?, ?, ?)`, [refundInfo.user_id, refundInfo.booking_id, refundInfo.refund_amount, balanceBefore, balanceAfter, refundInfo.booking_code, `Hoàn tiền cho booking ${refundInfo.booking_code}`]);
 
       // Bước 5: Giải phóng ghế/slot
-      if (refundInfo.vehicle_type === 'Bus' || refundInfo.vehicle_type === 'Train') {
-        const [tickets]: any = await conn.query(`SELECT seat_id FROM tickets WHERE booking_id = ?`, [refundInfo.booking_id]);
-        const seatIds = tickets.map((t: any) => t.seat_id).filter(Boolean);
-        if (seatIds.length > 0) await conn.query(`UPDATE seats SET status = 'Available' WHERE seat_id IN (?) AND status = 'Booked'`, [seatIds]);
-      } else if (refundInfo.vehicle_type === 'Flight') {
-        const [groups]: any = await conn.query(`SELECT class_id, COUNT(ticket_id) AS num FROM tickets WHERE booking_id = ? AND class_id IS NOT NULL GROUP BY class_id`, [refundInfo.booking_id]);
-        for (const group of groups) {
-          await conn.query(`UPDATE flight_ticket_classes SET available_slots = available_slots + ? WHERE class_id = ?`, [group.num, group.class_id]);
-        }
+      const [tickets]: any = await conn.query(
+        `SELECT seat_id FROM tickets WHERE booking_id = ?`,
+        [refundInfo.booking_id],
+      );
+      const seatIds = tickets.map((ticket: any) => ticket.seat_id).filter(Boolean);
+      if (seatIds.length > 0) {
+        await conn.query(
+          `UPDATE seats
+           SET status = 'Available'
+           WHERE seat_id IN (?) AND status = 'Booked'`,
+          [seatIds],
+        );
       }
 
       // Bước 6: Cập nhật trạng thái yêu cầu và booking

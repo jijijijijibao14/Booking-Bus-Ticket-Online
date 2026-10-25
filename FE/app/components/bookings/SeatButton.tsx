@@ -4,11 +4,9 @@ export interface Seat {
   seatId: number;
   id: string;
   status: SeatStatus;
-  // Add optional properties to be compatible with both Bus and Train seats
   floor?: number;
   row?: number;
   position?: string;
-  carriage?: number;
 }
 
 interface SeatButtonProps {

@@ -1,15 +1,19 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Bus, Users, Calendar, DollarSign, ChevronLeft, Plus, TrendingUp, AlertCircle, MapPin, MessageSquare } from 'lucide-react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { LayoutDashboard, Bus, Users, Calendar, DollarSign, ChevronLeft, Plus, TrendingUp, AlertCircle, MapPin, MessageSquare, MessageCircle, Home } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { getMerchantProfile, getMerchantStats, getMerchantFleet, getMerchantDrivers, getMerchantSchedules, createMerchantSchedule, updateMerchantSchedule, deleteMerchantSchedule, createMerchantBus, updateMerchantBus, deleteMerchantBus, createMerchantDriver, updateMerchantDriver, deleteMerchantDriver, getMerchantRefunds, approveMerchantRefund, rejectMerchantRefund, } from '@/api';
+import { getMerchantStats, getMerchantFleet, getMerchantDrivers, getMerchantSchedules, createMerchantSchedule, updateMerchantSchedule, deleteMerchantSchedule, createMerchantBus, updateMerchantBus, deleteMerchantBus, createMerchantDriver, updateMerchantDriver, deleteMerchantDriver, getMerchantRefunds, approveMerchantRefund, rejectMerchantRefund, } from '@/api';
 import MerchantOverview from './MerchantOverview';
 import MerchantVehicle from './MerchantVehicle';
 import MerchantDriver from './MerchantDriver';
 import MerchantSchedule from './MerchantSchedule';
 import MerchantRefund from './MerchantRefund';
+import MerchantFeedback from './MerchantFeedback';
+import ConversationInbox from '../communications/ConversationInbox';
+import RecurringScheduleManager from './RecurringScheduleManager';
 
-type Tab = 'overview' | 'fleet' | 'drivers' | 'schedule' |'refunds'| 'analytics'|'feedback';
+type Tab = 'overview' | 'operations' | 'refunds' | 'analytics' | 'feedback' | 'messages';
+type OperationsTab = 'fleet' | 'drivers' | 'schedule';
 type Resource = 'bus' | 'driver' | 'schedule';
 
 const provinceOptions = [
@@ -38,14 +42,16 @@ const provinceOptions = [
 
 export default function MerchantDashboard() {
   const navigate = useNavigate();
+  const { section } = useParams();
+  const [searchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<Tab>('overview');
+  const [operationsTab, setOperationsTab] = useState<OperationsTab>('fleet');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   // State cho dữ liệu thật
   const [stats, setStats] = useState<any>({});
-  const [merchantProfile, setMerchantProfile] = useState<any>(null);
   const [buses, setBuses] = useState<any[]>([]);
   const [showBusModal, setShowBusModal] = useState(false);
   const [showDriverModal, setShowDriverModal] = useState(false);
@@ -57,6 +63,27 @@ export default function MerchantDashboard() {
   const [schedules, setSchedules] = useState<any[]>([]);
   const [refunds, setRefunds] = useState<any[]>([]);
   const [revenueData, setRevenueData] = useState<any[]>([]);
+
+  useEffect(() => {
+    const tab = searchParams.get('tab');
+    const validTabs: Tab[] = ['overview', 'operations', 'refunds', 'analytics', 'feedback', 'messages'];
+    const legacyOperationsTabs: OperationsTab[] = ['fleet', 'drivers', 'schedule'];
+    if (!section && tab && legacyOperationsTabs.includes(tab as OperationsTab)) {
+      setActiveTab('operations');
+      setOperationsTab(tab as OperationsTab);
+      return;
+    }
+    if (section && legacyOperationsTabs.includes(section as OperationsTab)) {
+      setActiveTab('operations');
+      setOperationsTab(section as OperationsTab);
+    } else if (section && validTabs.includes(section as Tab)) {
+      setActiveTab(section as Tab);
+    } else if (!section && tab && validTabs.includes(tab as Tab)) {
+      setActiveTab(tab as Tab);
+    } else if (!section && !tab) {
+      setActiveTab('overview');
+    }
+  }, [searchParams, section]);
 
   const [busForm, setBusForm] = useState({
     id: "",
@@ -82,6 +109,7 @@ export default function MerchantDashboard() {
     vehicleId: "",
     driverId: "",
     departureTime: "",
+    durationMinutes: "180",
     price: "",
     status: "scheduled",
   });
@@ -135,19 +163,6 @@ export default function MerchantDashboard() {
   const [deleteTarget, setDeleteTarget] = useState<{ resource: Resource; item: any } | null>(null);
 
   useEffect(() => {
-    const fetchProfile = async () => {
-      try {
-        const profileRes = await getMerchantProfile();
-        setMerchantProfile(profileRes.data.data);
-      } catch (err) {
-        console.error('Không thể tải profile nhà xe:', err);
-      }
-    };
-
-    fetchProfile();
-  }, []);
-
-  useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
       setError(null);
@@ -156,13 +171,7 @@ export default function MerchantDashboard() {
           const statsRes = await getMerchantStats();
           setStats(statsRes.data.data);
           setRevenueData(statsRes.data.data.revenueChart);
-        } else if (activeTab === 'fleet') {
-          const fleetRes = await getMerchantFleet();
-          setBuses(fleetRes.data.data);
-        } else if (activeTab === 'drivers') {
-          const driversRes = await getMerchantDrivers();
-          setDrivers(driversRes.data.data);
-        } else if (activeTab === 'schedule') {
+        } else if (activeTab === 'operations') {
           const [schedulesRes, fleetRes, driversRes] = await Promise.all([
             getMerchantSchedules(),
             getMerchantFleet(),
@@ -188,12 +197,11 @@ export default function MerchantDashboard() {
 
   const menuItems = [
     { id: 'overview' as Tab, label: 'Tổng Quan', icon: LayoutDashboard },
-    { id: 'fleet' as Tab, label: 'Quản Lý Xe', icon: Bus },
-    { id: 'drivers' as Tab, label: 'Tài Xế', icon: Users },
-    { id: 'schedule' as Tab, label: 'Lịch Trình', icon: Calendar },
+    { id: 'operations' as Tab, label: 'Quản Lý Các Chuyến', icon: Bus },
     { id: 'refunds' as Tab, label: 'Hoàn Tiền', icon: AlertCircle },
     { id: 'analytics' as Tab, label: 'Báo Cáo', icon: DollarSign },
     { id: 'feedback' as Tab, label: 'Đánh Giá', icon: MessageSquare },
+    { id: 'messages' as Tab, label: 'Tin Nhắn', icon: MessageCircle },
   ];
 
   // Helper để hiển thị loading/error
@@ -236,6 +244,7 @@ export default function MerchantDashboard() {
         vehicleId: "",
         driverId: "",
         departureTime: "",
+        durationMinutes: "180",
         price: "",
         status: "scheduled",
       });
@@ -279,6 +288,7 @@ export default function MerchantDashboard() {
         vehicleId: item.vehicleId?.toString() || '',
         driverId: item.driverId?.toString() || '',
         departureTime: item.departureTime || '',
+        durationMinutes: String(item.estimatedDurationMinutes || 180),
         price: item.price?.toString() || '',
         status: item.status || 'scheduled',
       });
@@ -437,10 +447,15 @@ export default function MerchantDashboard() {
         const vehicleId = Number(scheduleForm.vehicleId);
         const driverId = Number(scheduleForm.driverId);
         const departureTime = scheduleForm.departureTime.trim();
+        const durationMinutes = Number(scheduleForm.durationMinutes);
         const basePrice = Number(scheduleForm.price);
 
-        if (!departureLocation || !arrivalLocation || !vehicleId || !driverId || !departureTime || !scheduleForm.price) {
+        if (!departureLocation || !arrivalLocation || !vehicleId || !departureTime || !scheduleForm.price) {
           setScheduleFormError('Vui lòng điền đầy đủ thông tin lịch trình.');
+          return;
+        }
+        if (!Number.isSafeInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 2880) {
+          setScheduleFormError('Thời lượng chuyến phải từ 1 đến 2880 phút.');
           return;
         }
 
@@ -475,7 +490,7 @@ export default function MerchantDashboard() {
           return;
         }
 
-        const arrivalDate = new Date(departureDate.getTime() + 24 * 60 * 60 * 1000); // 24 giờ mới cho phép trùng tài xế
+        const arrivalDate = new Date(departureDate.getTime() + durationMinutes * 60 * 1000);
         const hasVehicleConflict = schedules.some((s) => {
           if (isEditingSchedule && Number(s.id) === Number(scheduleForm.id)) {
             return false;
@@ -484,7 +499,8 @@ export default function MerchantDashboard() {
           if (sVehicleId && sVehicleId === vehicleId) {
             const sDep = new Date(s.departureTime);
             const sArr = s.arrivalTime ? new Date(s.arrivalTime) : new Date(sDep.getTime() + 24 * 60 * 60 * 1000);
-            return !(arrivalDate <= sDep || departureDate >= sArr);
+            return departureDate.getTime() < sArr.getTime() + 60 * 60 * 1000
+              && arrivalDate.getTime() > sDep.getTime() - 60 * 60 * 1000;
           }
           return false;
         });
@@ -519,6 +535,7 @@ export default function MerchantDashboard() {
           vehicle_id: vehicleId,
           driver_id: driverId,
           departure_time: departureTime,
+          estimated_duration_minutes: durationMinutes,
           base_price: basePrice,
           status: scheduleForm.status || undefined,
         };
@@ -546,20 +563,25 @@ export default function MerchantDashboard() {
         className={`${sidebarCollapsed ? 'w-20' : 'w-64'
           } bg-sidebar text-sidebar-foreground transition-all duration-300 flex flex-col border-r border-sidebar-border`}
       >
-        <div className="p-4 border-b border-sidebar-border flex items-center justify-between">
-          {!sidebarCollapsed && (
-            <button
-              type="button"
-              onClick={() => navigate('/merchant/info')}
-              className="text-left"
-            >
-              <h1 className="font-semibold text-lg text-white hover:text-blue-500 transition-colors">
-                {merchantProfile?.fullname || 'Merchant Portal'}
-              </h1>
-              <p className="text-xs text-sidebar-foreground/70">Merchant Portal</p>
-            </button>
-          )}
-          <button onClick={() => setSidebarCollapsed(!sidebarCollapsed)} className="p-2 hover:bg-sidebar-accent rounded-lg">
+        <div className="p-4 border-b border-sidebar-border flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => navigate('/')}
+            className={`flex min-w-0 flex-1 items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-white transition hover:bg-sidebar-accent ${
+              sidebarCollapsed ? 'justify-center px-2' : ''
+            }`}
+            aria-label="Về trang chủ"
+            title="Về trang chủ"
+          >
+            <Home className="h-5 w-5 shrink-0" />
+            {!sidebarCollapsed && <span className="truncate">Về trang chủ</span>}
+          </button>
+          <button
+            type="button"
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            className="shrink-0 rounded-lg p-2 hover:bg-sidebar-accent"
+            aria-label={sidebarCollapsed ? 'Mở rộng thanh bên' : 'Thu gọn thanh bên'}
+          >
             <ChevronLeft className={`w-5 h-5 transition-transform ${sidebarCollapsed ? 'rotate-180' : ''}`} />
           </button>
         </div>
@@ -569,7 +591,7 @@ export default function MerchantDashboard() {
             {menuItems.map((item) => (
               <li key={item.id}>
                 <button
-                  onClick={() => setActiveTab(item.id)}
+                  onClick={() => navigate(`/merchant/${item.id}`)}
                   className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === item.id
                     ? 'bg-sidebar-primary text-sidebar-primary-foreground'
                     : 'hover:bg-sidebar-accent text-sidebar-foreground/80'
@@ -604,39 +626,75 @@ export default function MerchantDashboard() {
             />
           )}
 
-          {activeTab === 'fleet' && (
-            <MerchantVehicle
-              buses={buses}
-              loading={loading}
-              error={error}
-              onAdd={() => handleAdd('bus')}
-              onEdit={(item: any) => handleEdit('bus', item)}
-              onDelete={(item: any) => handleDelete('bus', item)}
-            />
-          )}
-
-          {activeTab === 'drivers' && (
-            <MerchantDriver
-              drivers={drivers}
-              loading={loading}
-              error={error}
-              onAdd={() => handleAdd('driver')}
-              onEdit={(item: any) => handleEdit('driver', item)}
-              onDelete={(item: any) => handleDelete('driver', item)}
-            />
-          )}
-
-          {activeTab === 'schedule' && (
-            <MerchantSchedule
-              schedules={schedules}
-              buses={buses}
-              drivers={drivers}
-              loading={loading}
-              error={error}
-              onAdd={() => handleAdd('schedule')}
-              onEdit={(item: any) => handleEdit('schedule', item)}
-              onDelete={(item: any) => handleDelete('schedule', item)}
-            />
+          {activeTab === 'operations' && (
+            <section className="space-y-6">
+              <header>
+                <h2 className="text-2xl font-bold text-foreground">Quản Lý Các Chuyến</h2>
+                <p className="text-muted-foreground">Quản lý phương tiện, tài xế và lịch trình tại cùng một khu vực.</p>
+              </header>
+              <div className="flex flex-wrap gap-2 border-b border-border">
+                {([
+                  { id: 'fleet', label: 'Quản Lý Xe' },
+                  { id: 'drivers', label: 'Tài Xế' },
+                  { id: 'schedule', label: 'Lịch Trình' },
+                ] as const).map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setOperationsTab(item.id)}
+                    className={`border-b-2 px-4 py-3 text-sm font-semibold transition-colors ${
+                      operationsTab === item.id
+                        ? 'border-primary text-primary'
+                        : 'border-transparent text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+              {operationsTab === 'fleet' && (
+                <MerchantVehicle
+                  buses={buses}
+                  loading={loading}
+                  error={error}
+                  onAdd={() => handleAdd('bus')}
+                  onEdit={(item: any) => handleEdit('bus', item)}
+                  onDelete={(item: any) => handleDelete('bus', item)}
+                />
+              )}
+              {operationsTab === 'drivers' && (
+                <MerchantDriver
+                  drivers={drivers}
+                  loading={loading}
+                  error={error}
+                  onAdd={() => handleAdd('driver')}
+                  onEdit={(item: any) => handleEdit('driver', item)}
+                  onDelete={(item: any) => handleDelete('driver', item)}
+                />
+              )}
+              {operationsTab === 'schedule' && (
+                <>
+                  <RecurringScheduleManager
+                    vehicles={buses}
+                    drivers={drivers}
+                    onCreated={async () => {
+                      const schedulesRes = await getMerchantSchedules();
+                      setSchedules(sortSchedulesByRecency(schedulesRes.data.data || []));
+                    }}
+                  />
+                  <MerchantSchedule
+                    schedules={schedules}
+                    buses={buses}
+                    drivers={drivers}
+                    loading={loading}
+                    error={error}
+                    onAdd={() => handleAdd('schedule')}
+                    onEdit={(item: any) => handleEdit('schedule', item)}
+                    onDelete={(item: any) => handleDelete('schedule', item)}
+                  />
+                </>
+              )}
+            </section>
           )}
 
           {activeTab === 'refunds' && (
@@ -673,6 +731,9 @@ export default function MerchantDashboard() {
               </div>)}
             </>
           )}
+
+          {activeTab === 'feedback' && <MerchantFeedback />}
+          {activeTab === 'messages' && <ConversationInbox role="Partner" />}
         </div>
 
         {showBusModal && (
@@ -864,6 +925,18 @@ export default function MerchantDashboard() {
                     min={getMinDepartureDateTime()}
                     onChange={(e) => handleChange('schedule', 'departureTime', e.target.value)}
                     className="w-full px-3 py-2 border border-border rounded-lg bg-white text-black"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">Thời lượng dự kiến (phút)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="2880"
+                    value={scheduleForm.durationMinutes}
+                    onChange={(e) => handleChange('schedule', 'durationMinutes', e.target.value)}
+                    className="w-full px-3 py-2 border border-border rounded-lg"
+                    placeholder="180"
                   />
                 </div>
                 <div>

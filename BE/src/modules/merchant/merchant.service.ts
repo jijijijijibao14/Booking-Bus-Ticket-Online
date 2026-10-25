@@ -1,6 +1,6 @@
 import pool from '../../config/database.js';
 import { normalizeLocation } from '../../utils/normalize.util.js';
-import { addHoursLocal } from '../../utils/time.util.js';
+import { addHoursLocal, addMinutesLocal } from '../../utils/time.util.js';
 import { generateBusSeats } from '../../utils/seats.util.js';
 
 class MerchantService {
@@ -395,6 +395,10 @@ class MerchantService {
                 tr.driver_id as driverId, dr.driver_name as driver, dr.status as driverStatus,
                 DATE_FORMAT(tr.departure_time, '%Y-%m-%dT%H:%i') as departureTime,
                 DATE_FORMAT(tr.arrival_time, '%Y-%m-%dT%H:%i') as arrivalTime,
+                tr.estimated_duration_minutes as estimatedDurationMinutes,
+                tr.minimum_turnaround_minutes as minimumTurnaroundMinutes,
+                tr.actual_departure_time as actualDepartureTime,
+                tr.actual_arrival_time as actualArrivalTime,
                 DATE_FORMAT(tr.departure_time, '%H:%i') as departure, COALESCE(COUNT(tk.ticket_id),0) as seats, tr.base_price as price
          FROM trips tr
          JOIN routes r ON tr.route_id = r.route_id
@@ -416,32 +420,67 @@ class MerchantService {
     }
   }
 
-  async createMerchantSchedule(partnerId: number, payload: { departure_location: string; arrival_location: string; vehicle_id: number; driver_id?: number; departure_time: string; arrival_time?: string; base_price: number }) {
+  async createMerchantSchedule(partnerId: number, payload: { departure_location: string; arrival_location: string; vehicle_id: number; driver_id?: number; departure_time: string; arrival_time?: string; estimated_duration_minutes?: number; base_price: number }) {
+    const conn = await pool.getConnection();
+    let transactionStarted = false;
     try {
-      const conn = await pool.getConnection();
+      await conn.beginTransaction();
+      transactionStarted = true;
       const [vehicleRows] = await conn.query(
-        `SELECT vehicle_type, total_seats FROM vehicles WHERE vehicle_id = ? AND partner_id = ?`,
+        `SELECT vehicle_type, total_seats, status
+         FROM vehicles
+         WHERE vehicle_id = ? AND partner_id = ?
+         FOR UPDATE`,
         [payload.vehicle_id, partnerId]
       );
       if ((vehicleRows as any).length === 0) {
-        conn.release();
         throw new Error('Xe không tồn tại hoặc không thuộc đối tác.');
       }
       const { vehicle_type: vehicleType, total_seats: totalSeats } = (vehicleRows as any)[0];
+      if (String((vehicleRows as any)[0].status).toLowerCase() !== 'active') {
+        throw new Error('Xe đang không hoạt động.');
+      }
 
       if (payload.driver_id) {
         const [driverRows] = await conn.query(
-          `SELECT driver_id FROM drivers WHERE driver_id = ? AND partner_id = ? AND status = 'available'`,
+          `SELECT driver_id
+           FROM drivers
+           WHERE driver_id = ? AND partner_id = ? AND status = 'available'
+           FOR UPDATE`,
           [payload.driver_id, partnerId]
         );
         if ((driverRows as any).length === 0) {
-          conn.release();
           throw new Error('Tài xế không tồn tại hoặc không khả dụng.');
         }
       }
 
       const departureTime = payload.departure_time;
-      const arrivalTime = payload.arrival_time || addHoursLocal(departureTime, 24);
+      const estimatedDurationMinutes = payload.estimated_duration_minutes ?? null;
+      if (!Number.isFinite(new Date(departureTime).getTime())) {
+        throw new Error('Thời gian khởi hành không hợp lệ.');
+      }
+      if (!Number.isFinite(payload.base_price) || payload.base_price < 0) {
+        throw new Error('Giá vé phải là số không âm.');
+      }
+      const arrivalTime = estimatedDurationMinutes
+        ? addMinutesLocal(departureTime, estimatedDurationMinutes)
+        : payload.arrival_time || addHoursLocal(departureTime, 24);
+      if (new Date(arrivalTime).getTime() <= new Date(departureTime).getTime()) {
+        throw new Error('Thời gian đến phải sau thời gian khởi hành.');
+      }
+      const [vehicleConflictRows] = await conn.query(
+        `SELECT trip_id
+         FROM trips
+         WHERE vehicle_id = ?
+           AND status <> 'Cancelled'
+           AND departure_time < DATE_ADD(?, INTERVAL 60 MINUTE)
+           AND arrival_time > DATE_SUB(?, INTERVAL 60 MINUTE)
+         LIMIT 1`,
+        [payload.vehicle_id, arrivalTime, departureTime],
+      );
+      if ((vehicleConflictRows as any).length > 0) {
+        throw new Error('Xe đang có chuyến trùng giờ hoặc chưa đủ 60 phút nghỉ/quay đầu.');
+      }
       if (payload.driver_id) {
         const [conflictRows] = await conn.query(
           `SELECT trip_id FROM trips
@@ -451,7 +490,6 @@ class MerchantService {
           [payload.driver_id, departureTime, arrivalTime]
         );
         if ((conflictRows as any).length > 0) {
-          conn.release();
           throw new Error('Tài xế đã được phân công cho chuyến khác.');
         }
       }
@@ -474,65 +512,97 @@ class MerchantService {
         routeId = (routeResult as any).insertId;
       }
 
-      // Bắt đầu transaction để đảm bảo cả trip và seats được tạo đồng bộ
-      await conn.beginTransaction();
-      try {
-        const [result] = await conn.query(
-          `INSERT INTO trips (route_id, vehicle_id, driver_id, departure_time, arrival_time, base_price, status) VALUES (?, ?, ?, ?, ?, ?, 'Scheduled')`,
-          [routeId, payload.vehicle_id, payload.driver_id || null, departureTime, arrivalTime, payload.base_price]
+      const [result] = await conn.query(
+        `INSERT INTO trips (
+           route_id, vehicle_id, driver_id, departure_time, arrival_time,
+           estimated_duration_minutes, minimum_turnaround_minutes, base_price, status
+         ) VALUES (?, ?, ?, ?, ?, ?, 60, ?, 'Scheduled')`,
+        [routeId, payload.vehicle_id, payload.driver_id || null, departureTime, arrivalTime, estimatedDurationMinutes, payload.base_price]
+      );
+      const tripId = (result as any).insertId;
+
+      if (vehicleType === 'Bus') {
+        const seats = generateBusSeats(tripId, totalSeats);
+        const values = seats.map(s => [s.trip_id, s.seat_code, s.floor, s.row, s.position, s.status]);
+        await conn.query(
+          `INSERT INTO seats (trip_id, seat_code, floor, \`row\`, position, status) VALUES ?`,
+          [values]
         );
-        const tripId = (result as any).insertId;
-
-        // Tự động sinh ghế nếu là xe khách (Bus)
-        if (vehicleType === 'Bus') {
-          const seats = generateBusSeats(tripId, totalSeats);
-          const values = seats.map(s => [s.trip_id, s.seat_code, s.floor, s.row, s.position, s.status]);
-          await conn.query(
-            `INSERT INTO seats (trip_id, seat_code, floor, \`row\`, position, status) VALUES ?`,
-            [values]
-          );
-        }
-
-        await conn.commit();
-        conn.release();
-        return { id: tripId };
-      } catch (transactionError) {
-        await conn.rollback();
-        conn.release();
-        throw transactionError;
       }
+
+      await conn.commit();
+      transactionStarted = false;
+      return { id: tripId };
     } catch (err: any) {
+      if (transactionStarted) await conn.rollback();
       throw new Error(`Lỗi tạo lịch trình: ${err.message}`);
+    } finally {
+      conn.release();
     }
   }
 
-  async updateMerchantSchedule(partnerId: number, tripId: number, payload: { departure_location?: string; arrival_location?: string; vehicle_id?: number; driver_id?: number; departure_time?: string; arrival_time?: string; base_price?: number; status?: string }) {
+  async updateMerchantSchedule(partnerId: number, tripId: number, payload: { departure_location?: string; arrival_location?: string; vehicle_id?: number; driver_id?: number; departure_time?: string; arrival_time?: string; estimated_duration_minutes?: number; base_price?: number; status?: string }) {
+    const conn = await pool.getConnection();
+    let transactionStarted = false;
     try {
-      const conn = await pool.getConnection();
+      await conn.beginTransaction();
+      transactionStarted = true;
       const [existingRows] = await conn.query(
-        `SELECT tr.trip_id, tr.route_id, tr.vehicle_id, tr.driver_id, tr.departure_time, tr.arrival_time, v.vehicle_type
+        `SELECT tr.trip_id, tr.route_id, tr.vehicle_id, tr.driver_id,
+                tr.departure_time, tr.arrival_time, tr.estimated_duration_minutes,
+                tr.status, tr.actual_departure_time, v.vehicle_type,
+                (tr.departure_time <= CURRENT_TIMESTAMP OR tr.actual_departure_time IS NOT NULL) AS hasStarted
          FROM trips tr
          JOIN vehicles v ON tr.vehicle_id = v.vehicle_id
-         WHERE tr.trip_id = ? AND v.partner_id = ?`,
+         WHERE tr.trip_id = ? AND v.partner_id = ?
+         FOR UPDATE`,
         [tripId, partnerId]
       );
       if ((existingRows as any).length === 0) {
-        conn.release();
         throw new Error('Lịch trình không tồn tại hoặc không thuộc đối tác.');
       }
       const existing = (existingRows as any)[0];
+      const changesSchedule = payload.departure_location !== undefined
+        || payload.arrival_location !== undefined
+        || payload.vehicle_id !== undefined
+        || payload.departure_time !== undefined
+        || payload.arrival_time !== undefined
+        || payload.estimated_duration_minutes !== undefined
+        || payload.base_price !== undefined;
+      const [ticketRows] = await conn.query(
+        `SELECT COUNT(*) AS ticketCount
+         FROM tickets tk
+         JOIN seats s ON s.seat_id = tk.seat_id
+         WHERE s.trip_id = ?`,
+        [tripId],
+      );
+      const ticketCount = Number((ticketRows as any)[0]?.ticketCount || 0);
+      if (ticketCount > 0 && (changesSchedule || payload.status === 'Cancelled')) {
+        throw new Error('Chuyến đã có vé; không thể thay đổi giờ, xe, tuyến, giá hoặc hủy chuyến trực tiếp.');
+      }
+      if (Boolean(existing.hasStarted) && changesSchedule) {
+        throw new Error('Chuyến đã bắt đầu; không thể thay đổi thông tin vận hành.');
+      }
+      if (
+        existing.status !== 'Scheduled' &&
+        payload.status === 'Scheduled'
+      ) {
+        throw new Error('Không thể đưa chuyến đã bắt đầu hoặc hoàn tất về trạng thái đã lên lịch.');
+      }
       let routeId = existing.route_id;
       let vehicleType = existing.vehicle_type;
       let vehicleId = existing.vehicle_id;
 
       if (payload.vehicle_id && payload.vehicle_id !== existing.vehicle_id) {
         const [vehicleRows] = await conn.query(
-          `SELECT vehicle_type FROM vehicles WHERE vehicle_id = ? AND partner_id = ?`,
+          `SELECT vehicle_type, status FROM vehicles WHERE vehicle_id = ? AND partner_id = ?`,
           [payload.vehicle_id, partnerId]
         );
         if ((vehicleRows as any).length === 0) {
-          conn.release();
           throw new Error('Xe không tồn tại hoặc không thuộc đối tác.');
+        }
+        if (String((vehicleRows as any)[0].status).toLowerCase() !== 'active') {
+          throw new Error('Xe mới đang không hoạt động.');
         }
         vehicleType = (vehicleRows as any)[0].vehicle_type;
         vehicleId = payload.vehicle_id;
@@ -544,14 +614,34 @@ class MerchantService {
           [payload.driver_id, partnerId]
         );
         if ((driverRows as any).length === 0) {
-          conn.release();
           throw new Error('Tài xế không tồn tại hoặc không khả dụng.');
         }
       }
 
       const effectiveDepartureTime = payload.departure_time || existing.departure_time;
-      const effectiveArrivalTime = payload.arrival_time || (payload.departure_time ? addHoursLocal(payload.departure_time, 24) : existing.arrival_time);
+      const effectiveEstimatedDuration = payload.estimated_duration_minutes
+        ?? (existing.estimated_duration_minutes == null ? null : Number(existing.estimated_duration_minutes));
+      const effectiveArrivalTime = payload.arrival_time
+        || (payload.departure_time && effectiveEstimatedDuration
+          ? addMinutesLocal(effectiveDepartureTime, effectiveEstimatedDuration)
+          : payload.departure_time
+            ? addHoursLocal(payload.departure_time, 24)
+            : existing.arrival_time);
       const driverToCheck = payload.driver_id !== undefined ? payload.driver_id : existing.driver_id;
+      const [vehicleConflictRows] = await conn.query(
+        `SELECT trip_id
+         FROM trips
+         WHERE vehicle_id = ?
+           AND status <> 'Cancelled'
+           AND trip_id <> ?
+           AND departure_time < DATE_ADD(?, INTERVAL 60 MINUTE)
+           AND arrival_time > DATE_SUB(?, INTERVAL 60 MINUTE)
+         LIMIT 1`,
+        [vehicleId, tripId, effectiveArrivalTime, effectiveDepartureTime],
+      );
+      if ((vehicleConflictRows as any).length > 0) {
+        throw new Error('Xe đang có chuyến trùng giờ hoặc chưa đủ 60 phút nghỉ/quay đầu.');
+      }
       if (driverToCheck) {
         const [conflictRows] = await conn.query(
           `SELECT trip_id FROM trips
@@ -562,7 +652,6 @@ class MerchantService {
           [driverToCheck, effectiveDepartureTime, effectiveArrivalTime, tripId]
         );
         if ((conflictRows as any).length > 0) {
-          conn.release();
           throw new Error('Tài xế đã được phân công cho chuyến khác trong cùng khung giờ.');
         }
       }
@@ -586,14 +675,31 @@ class MerchantService {
       }
 
       const [result] = await conn.query(
-        `UPDATE trips SET route_id = ?, vehicle_id = ?, driver_id = COALESCE(?, driver_id), departure_time = COALESCE(?, departure_time), arrival_time = COALESCE(?, arrival_time), base_price = COALESCE(?, base_price), status = COALESCE(?, status)
+        `UPDATE trips SET route_id = ?, vehicle_id = ?, driver_id = COALESCE(?, driver_id),
+          departure_time = COALESCE(?, departure_time), arrival_time = COALESCE(?, arrival_time),
+          estimated_duration_minutes = COALESCE(?, estimated_duration_minutes),
+          base_price = COALESCE(?, base_price), status = COALESCE(?, status)
          WHERE trip_id = ?`,
-        [routeId, vehicleId, payload.driver_id ?? null, payload.departure_time || null, effectiveArrivalTime || null, payload.base_price ?? null, payload.status || null, tripId]
+        [
+          routeId,
+          vehicleId,
+          payload.driver_id ?? null,
+          payload.departure_time || null,
+          effectiveArrivalTime || null,
+          effectiveEstimatedDuration,
+          payload.base_price ?? null,
+          payload.status || null,
+          tripId,
+        ]
       );
-      conn.release();
+      await conn.commit();
+      transactionStarted = false;
       return { affectedRows: (result as any).affectedRows };
     } catch (err: any) {
+      if (transactionStarted) await conn.rollback();
       throw new Error(`Lỗi cập nhật lịch trình: ${err.message}`);
+    } finally {
+      conn.release();
     }
   }
 
@@ -670,8 +776,7 @@ class MerchantService {
          JOIN users u ON b.user_id = u.user_id
          LEFT JOIN tickets tk ON b.booking_id = tk.booking_id
          LEFT JOIN seats s ON tk.seat_id = s.seat_id
-         LEFT JOIN flight_ticket_classes ftc ON tk.class_id = ftc.class_id
-         JOIN trips tr ON tr.trip_id = COALESCE(s.trip_id, ftc.trip_id)
+         JOIN trips tr ON tr.trip_id = s.trip_id
          JOIN routes rt ON tr.route_id = rt.route_id
          WHERE r.partner_id = ?
          GROUP BY r.refund_id

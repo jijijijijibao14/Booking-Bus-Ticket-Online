@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { MerchantController } from './merchant.controller.js';
 import { verifyToken, verifyRole } from '../../middlewares/auth.middleware.js';
+import feedbackController from '../feedback/feedback.controller.js';
+import recurringScheduleController from './recurring-schedule.controller.js';
 
 const router = Router();
 const controller = new MerchantController();
@@ -13,7 +15,13 @@ router.get('/stats', controller.getStats);
 router.get('/fleet', controller.getFleet);
 router.get('/drivers', controller.getDrivers);
 router.get('/schedules', controller.getSchedules);
+router.get('/schedule-templates', recurringScheduleController.getTemplates);
+router.post('/schedules/recurring/preview', recurringScheduleController.preview);
+router.post('/schedules/recurring', recurringScheduleController.create);
+router.patch('/schedule-templates/:id/status', recurringScheduleController.setStatus);
 router.get('/refunds', controller.getRefunds);
+router.get('/feedback', feedbackController.getPartnerFeedback);
+router.post('/feedback/:feedbackId/reply', feedbackController.replyToFeedback);
 router.patch('/refunds/:id/approve', controller.approveRefund);
 router.patch('/refunds/:id/reject', controller.rejectRefund);
 router.get('/wallet', controller.getMerchantWallet);

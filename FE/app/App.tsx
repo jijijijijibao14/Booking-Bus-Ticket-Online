@@ -19,17 +19,21 @@ import NotFoundPage from './components/NotFoundPage';
 // Các trang booking
 import CheckoutPage from './components/bookings/CheckoutPage';
 import BusBooking from './components/bookings/BusBooking';
-import TrainBooking from './components/bookings/TrainBooking';
-import FlightBooking from './components/bookings/FlightBooking';
 import BookingSuccess from './components/bookings/BookingSuccess';
 import PaymentResult from './components/bookings/PaymentResult';
 
 // Các trang tài khoản
 import ForgotPasswordPage from './components/ui/ForgotPasswordPage';
 import ResetPasswordPage from './components/ui/ResetPasswordPage';
+import CustomerChatWidget from './components/communications/CustomerChatWidget';
 
 function Root() {
-  return <Outlet />;
+  return (
+    <>
+      <Outlet />
+      <CustomerChatWidget />
+    </>
+  );
 }
 
 const router = createBrowserRouter([
@@ -63,6 +67,10 @@ const router = createBrowserRouter([
         element: <MerchantDashboard />,
       },
       {
+        path: '/merchant/:section',
+        element: <MerchantDashboard />,
+      },
+      {
         path: '/merchant/info',
         element: <MerchantInfo />,
       },
@@ -77,14 +85,6 @@ const router = createBrowserRouter([
       {
         path: '/booking/bus',
         element: <BusBooking />,
-      },
-      {
-        path: '/booking/train',
-        element: <TrainBooking />,
-      },
-      {
-        path: '/booking/flight',
-        element: <FlightBooking />,
       },
       {
         path: '/checkout',

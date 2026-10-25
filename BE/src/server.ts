@@ -8,7 +8,7 @@ const startServer = async () => {
   try {
     // Kiểm tra kết nối Database trước khi bật server
     const connection = await pool.getConnection();
-    console.log('✅ Đã kết nối tới MySQL Database (transport_booking_db) thành công!');
+    console.log(`✅ Đã kết nối tới MySQL Database (${process.env.DB_NAME || 'booking'}) thành công!`);
     connection.release();
 
     // Khởi chạy server

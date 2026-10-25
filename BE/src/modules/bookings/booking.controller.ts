@@ -22,6 +22,13 @@ class BookingController {
       // @ts-ignore
       const userId = req.user.user_id;
 
+      if (req.body?.vehicleType !== 'Bus') {
+        return res.status(400).json({
+          success: false,
+          message: 'Chỉ hỗ trợ đặt vé xe khách.',
+        });
+      }
+
       const result =
         await bookingService.confirmSingleBooking(
           userId,
@@ -64,12 +71,15 @@ class BookingController {
 
     if (
       !Array.isArray(bookingPayloads) ||
-      bookingPayloads.length !== 2
+      bookingPayloads.length !== 2 ||
+      bookingPayloads.some(
+        (payload: any) => payload?.vehicleType !== 'Bus',
+      )
     ) {
       return res.status(400).json({
         success: false,
         message:
-          'Đặt vé khứ hồi cần đúng hai booking payload.',
+          'Đặt vé khứ hồi cần đúng hai booking xe khách.',
       });
     }
 

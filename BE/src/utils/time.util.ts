@@ -4,15 +4,21 @@
  * This prevents timezone conversion issues when using toISOString().
  */
 export function addHoursLocal(dateTimeStr: string, hours: number): string {
-  const date = new Date(dateTimeStr);
-  date.setHours(date.getHours() + hours);
+  return addMinutesLocal(dateTimeStr, hours * 60);
+}
 
-  const YYYY = date.getFullYear();
-  const MM = String(date.getMonth() + 1).padStart(2, '0');
-  const DD = String(date.getDate()).padStart(2, '0');
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
-  const ss = String(date.getSeconds()).padStart(2, '0');
-
-  return `${YYYY}-${MM}-${DD} ${hh}:${mm}:${ss}`;
+export function addMinutesLocal(dateTimeStr: string, minutes: number): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(dateTimeStr);
+  if (!match || !Number.isSafeInteger(minutes)) {
+    throw new Error('Ngày giờ hoặc thời lượng không hợp lệ.');
+  }
+  const timestamp = Date.UTC(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    Number(match[4]),
+    Number(match[5]),
+    Number(match[6] || 0),
+  ) + minutes * 60_000;
+  return new Date(timestamp).toISOString().slice(0, 19).replace('T', ' ');
 }

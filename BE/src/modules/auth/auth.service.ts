@@ -5,6 +5,7 @@ import { OAuth2Client } from 'google-auth-library';
 import jwt from 'jsonwebtoken';
 import pool from '../../config/database.js';
 import redisClient from '../../config/redis.js';
+import { hashPassword, verifyPassword } from './password.util.js';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 
 if (!GOOGLE_CLIENT_ID) {
@@ -58,12 +59,12 @@ async loginWithGoogle(token: string) {
 
       const [result]: any = await pool.query(
         `INSERT INTO users
-         (username, email, password_plain, full_name, phone, role)
+         (username, email, password_hash, full_name, phone, role)
          VALUES (?, ?, ?, ?, ?, ?)`,
         [
           generatedUsername,
           email,
-          'GoogleAuth_NoPassword',
+          null,
           fullName,
           null,
           'Customer',
@@ -117,19 +118,23 @@ async loginWithGoogle(token: string) {
   }
 }
 
-  async login(email: string, password: string) {
-    console.log(` Đang truy vấn DB với Email: [${email}] và Pass: [${password}]`);
+  async login(identifier: string, password: string) {
+    const normalizedIdentifier = identifier.trim();
     const [rows]: any = await pool.query(
-      'SELECT user_id, email, full_name, phone, role FROM users WHERE email = ? AND password_plain = ?',
-      [email, password]
+      `SELECT user_id, email, full_name, phone, role, status, password_hash
+       FROM users
+       WHERE email = ? OR username = ?
+       ORDER BY (email = ?) DESC
+       LIMIT 1`,
+      [normalizedIdentifier, normalizedIdentifier, normalizedIdentifier.toLowerCase()]
     );
-    
-    if (rows.length === 0) {
-      console.log('❌ THẤT BẠI: Không có bản ghi nào khớp trong bảng users.');
-    } else {
-      console.log('✅ THÀNH CÔNG: Đã tìm thấy người dùng:', rows[0].full_name);
+    const user = rows[0];
+    if (!user || !(await verifyPassword(password, user.password_hash))) {
+      return undefined;
     }
-    return rows[0];
+
+    const { password_hash: _passwordHash, ...safeUser } = user;
+    return safeUser;
   }
 
   private validateRegistration(data: any) {
@@ -299,37 +304,65 @@ async loginWithGoogle(token: string) {
       this.validateRegistration(data);
     await this.ensureEmailAvailable(email);
 
-    const [userResult]: any = await pool.query(
-      'INSERT INTO users (username, email, password_plain, full_name, phone, role) VALUES (?, ?, ?, ?, ?, ?)',
-      [username, email, password, full_name, phone, role]
-    );
+    const connection = await pool.getConnection();
+    const status = role === 'Partner' ? 'Pending Approval' : 'Active';
 
-    console.log(`✅ ĐĂNG KÝ THÀNH CÔNG: Tạo mới user_id [${userResult.insertId}]`);
+    try {
+      await connection.beginTransaction();
 
-    return {
-      user_id: userResult.insertId,
-      email,
-      full_name,
-      phone,
-      role,
-      status: 'Pending Approval',
-    };
+      const passwordHash = await hashPassword(password);
+      const [userResult]: any = await connection.query(
+        `INSERT INTO users
+          (username, email, password_hash, full_name, phone, role, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [username, email, passwordHash, full_name, phone, role, status],
+      );
+
+      if (role === 'Partner') {
+        await connection.query(
+          `INSERT INTO partner_profiles
+            (partner_id, brand_name, license_number)
+           VALUES (?, ?, ?)`,
+          [userResult.insertId, data.brand_name, data.license_number],
+        );
+      }
+
+      await connection.commit();
+
+      console.log(`✅ ĐĂNG KÝ THÀNH CÔNG: Tạo mới user_id [${userResult.insertId}]`);
+
+      return {
+        user_id: userResult.insertId,
+        email,
+        full_name,
+        phone,
+        role,
+        status,
+      };
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
   }
   // --- 1. ĐỔI MẬT KHẨU KHI ĐÃ ĐĂNG NHẬP ---
   async changePassword(userId: number, currentPass: string, newPass: string) {
     // Tìm user
     const [rows]: any = await pool.query(
-      'SELECT password_plain FROM users WHERE user_id = ?',
+      'SELECT password_hash FROM users WHERE user_id = ?',
       [userId]
     );
 
     if (rows.length === 0) throw new Error('Người dùng không tồn tại.');
-    if (rows[0].password_plain !== currentPass) throw new Error('Mật khẩu hiện tại không đúng.');
+    if (!(await verifyPassword(currentPass, rows[0].password_hash))) {
+      throw new Error('Mật khẩu hiện tại không đúng.');
+    }
 
-    // Cập nhật pass mới
+    const passwordHash = await hashPassword(newPass);
     await pool.query(
-      'UPDATE users SET password_plain = ? WHERE user_id = ?',
-      [newPass, userId]
+      'UPDATE users SET password_hash = ? WHERE user_id = ?',
+      [passwordHash, userId]
     );
 
     return true;
@@ -399,9 +432,10 @@ async loginWithGoogle(token: string) {
     }
 
     // Đổi mật khẩu mới và xóa token đi
+    const passwordHash = await hashPassword(newPass);
     await pool.query(
-      'UPDATE users SET password_plain = ?, reset_token = NULL, reset_token_expire = NULL WHERE user_id = ?',
-      [newPass, users[0].user_id]
+      'UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expire = NULL WHERE user_id = ?',
+      [passwordHash, users[0].user_id]
     );
 
     return true;

@@ -1,7 +1,7 @@
 import { toast } from 'sonner';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { User, Mail, Lock, Phone, Briefcase } from 'lucide-react';
+import { User, Mail, Lock, Phone, Briefcase, ArrowLeft } from 'lucide-react';
 import { requestRegistrationOtp, verifyRegistrationOtp } from '@/api';
 
 export default function RegisterPage() {
@@ -118,8 +118,16 @@ export default function RegisterPage() {
   const otpCountdown = `${String(Math.floor(otpSecondsRemaining / 60)).padStart(2, '0')}:${String(otpSecondsRemaining % 60).padStart(2, '0')}`;
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
-      <div className="max-w-md w-full bg-white rounded-xl shadow-lg p-8">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-sky-100 p-4">
+      <button
+        type="button"
+        onClick={() => navigate('/')}
+        className="fixed left-5 top-5 z-50 inline-flex items-center gap-2 rounded-full border border-blue-100 bg-white/95 px-4 py-2 text-sm font-semibold text-blue-800 shadow-lg transition hover:bg-blue-50"
+      >
+        <ArrowLeft className="h-4 w-4" />
+        Về trang chủ
+      </button>
+      <div className="max-w-md w-full bg-white rounded-2xl border border-blue-100 shadow-xl p-8">
         <div className="mb-6 text-center">
           <h2 className="text-3xl font-bold text-foreground mb-2">Đăng Ký Tài Khoản</h2>
           <p className="text-muted-foreground">Chọn loại tài khoản và tham gia cùng VIỆTGO</p>

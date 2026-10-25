@@ -1,16 +1,18 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bus, Train, Plane, Calendar, Users, MapPin, ShieldCheck, Clock, HeadphonesIcon, ThumbsUp, Mail, Phone, Facebook, Twitter, Instagram, User } from 'lucide-react';
+import { Bus, Calendar, Users, MapPin, ShieldCheck, Clock, HeadphonesIcon, ThumbsUp, Mail, Phone, Facebook, Twitter, Instagram, User, ChevronDown, LogOut, Building2, LayoutDashboard, CalendarDays, RefreshCw, BarChart3, Star, MessageCircle, History } from 'lucide-react';
 import Masonry, { ResponsiveMasonry } from 'react-responsive-masonry'; 
 import { motion } from 'motion/react';
-import { searchTrips } from '@/api';
+import { getMerchantProfile, searchTrips } from '@/api';
 import { toast } from 'sonner';
 
 export default function LandingPage() {
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<'bus' | 'train' | 'flight'>('bus');
+  const tripSearchRef = useRef<HTMLDivElement>(null);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [userName, setUserName] = useState('');
+  const [userRole, setUserRole] = useState('');
+  const [partnerName, setPartnerName] = useState('');
   
   // Danh sách địa điểm gợi ý
   const locations = [
@@ -41,17 +43,40 @@ export default function LandingPage() {
   useEffect(() => {
     const token = localStorage.getItem('token');
     const name = localStorage.getItem('userName');
+    const role = localStorage.getItem('role') || '';
     setIsLoggedIn(!!token);
+    setUserRole(role);
     if (name) setUserName(name);
+    if (token && role === 'Partner') {
+      getMerchantProfile()
+        .then((response) => {
+          setPartnerName(response.data?.data?.brand_name || name || 'Nhà xe');
+        })
+        .catch((error) => {
+          console.error('Không thể tải tên nhà xe:', error);
+          setPartnerName(name || 'Nhà xe');
+        });
+    }
   }, []);
 
   const handleLogout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('role');
     localStorage.removeItem('userName');
+    localStorage.removeItem('userEmail');
+    localStorage.removeItem('userPhone');
+    localStorage.removeItem('userStatus');
+    localStorage.removeItem('rememberedEmail');
     setIsLoggedIn(false);
+    setUserRole('');
     navigate('/');
   };
+
+  const openMerchantPage = (tab: string) => {
+    navigate(`/merchant/${tab}`);
+  };
+
+  const isPartner = isLoggedIn && userRole === 'Partner';
 
   const [searchData, setSearchData] = useState({
     from: '',
@@ -60,6 +85,42 @@ export default function LandingPage() {
     returnDate: '',
     passengers: 1,
   });
+
+  const popularRoutes = [
+    {
+      from: 'Hà Nội',
+      to: 'Sapa',
+      label: 'Hà Nội - Sa Pa',
+      image: 'https://images.unsplash.com/photo-1609412058473-c199497c3c5d?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHxTYXBhJTIwcmljZSUyMHRlcnJhY2VzfGVufDF8fHx8fDE3ODA0NjcxMDV8MA&ixlib=rb-4.1.0&q=80&w=1080',
+      color: 'bg-[#718b91]',
+    },
+    {
+      from: 'TP. Hồ Chí Minh',
+      to: 'Cần Thơ',
+      label: 'Sài Gòn - Cần Thơ',
+      image: 'https://images.unsplash.com/photo-1561461221-959c3f16234b?auto=format&fit=crop&w=1000&q=80',
+      color: 'bg-[#5c5277]',
+    },
+    {
+      from: 'TP. Hồ Chí Minh',
+      to: 'Đà Lạt',
+      label: 'Sài Gòn - Đà Lạt',
+      image: 'https://images.unsplash.com/photo-1722863075616-878d8b4bf3c7?auto=format&fit=crop&w=1000&q=80',
+      color: 'bg-[#c47e51]',
+    },
+    {
+      from: 'Đà Nẵng',
+      to: 'Huế',
+      label: 'Đà Nẵng - Huế',
+      image: 'https://images.unsplash.com/photo-1559564484-e48b3e040ff4?auto=format&fit=crop&w=1000&q=80',
+      color: 'bg-[#9b957e]',
+    },
+  ];
+
+  const selectPopularRoute = (from: string, to: string) => {
+    setSearchData((previous) => ({ ...previous, from, to }));
+    tripSearchRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
 
   const destinations = [
     {
@@ -122,33 +183,25 @@ export default function LandingPage() {
     }
     // --- END VALIDATION ---
 
-    const formattedType = activeTab.charAt(0).toUpperCase() + activeTab.slice(1);
-
     try {
       // GỌI API TÌM CHUYẾN THẬT TỪ DATABASE
       const response = await searchTrips({
         from: searchData.from,
         to: searchData.to,
         departureDate: searchData.departureDate,
-        type: formattedType,
+        type: 'Bus',
       });
 
       const results = response.data.data;
       console.log('Tìm thấy chuyến đi:', results); // In ra log để bạn tiện xem data DB
 
       // Chuyển trang và đẩy dữ liệu thật sang cho Trang Sơ đồ ghế xử lý tiếp
-      if (activeTab === 'bus') {
-        navigate('/booking/bus', { state: { searchData, results } });
-      } else if (activeTab === 'train') {
-        navigate('/booking/train', { state: { searchData, results } });
-      } else {
-        navigate('/booking/flight', { state: { searchData, results } });
-      }
+      navigate('/booking/bus', { state: { searchData, results } });
     } catch (error: any) {
       console.error('❌ API Error Details:', {
         status: error.response?.status,
         message: error.response?.data?.message || error.message,
-        params: { from: searchData.from, to: searchData.to, departureDate: searchData.departureDate, type: formattedType },
+        params: { from: searchData.from, to: searchData.to, departureDate: searchData.departureDate, type: 'Bus' },
         error: error.response?.data || error.message
       });
       toast.error('Lỗi tìm kiếm', { description: error.response?.data?.message || error.message });
@@ -173,24 +226,68 @@ export default function LandingPage() {
             </div>
             <div className="flex items-center gap-3">
               {isLoggedIn ? (
-  <>
-    <button
-      onClick={() => navigate('/profile')}
-      className="flex items-center gap-2 px-4 py-2 rounded-lg text-slate-600 hover:bg-slate-100 transition-colors font-medium"
-    >
-      <User className="w-5 h-5" />
-      <span className="hidden sm:inline">
-        {userName || "Hồ sơ của tôi"}
-      </span>
-    </button>
-
-    <button
-      onClick={handleLogout}
-      className="px-6 py-2 rounded-lg bg-slate-200 text-slate-700 hover:bg-slate-300 transition-colors font-medium shadow-sm"
-    >
-      Đăng xuất
-    </button>
-  </>
+                <>
+                  {userRole === 'Customer' && (
+                    <button
+                      type="button"
+                      onClick={() => navigate('/profile?tab=history')}
+                      className="inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold text-blue-800 transition hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                    >
+                      <History className="h-4 w-4" />
+                      Đơn hàng của tôi
+                    </button>
+                  )}
+                  <div className="group relative">
+                    <button
+                      type="button"
+                      onClick={() => isPartner ? openMerchantPage('overview') : navigate(userRole === 'Admin' ? '/admin' : '/profile')}
+                      className="flex items-center gap-2 rounded-xl px-3 py-2 font-semibold text-blue-900 transition hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                      aria-haspopup="true"
+                    >
+                      <User className="h-5 w-5" />
+                      <span className="max-w-44 truncate">
+                        {isPartner ? partnerName || userName || 'Nhà xe' : userName || 'Customer'}
+                      </span>
+                      <ChevronDown className="h-4 w-4" />
+                    </button>
+                    {(isPartner || userRole === 'Customer' || userRole === 'Admin') && (
+                      <div className="invisible absolute right-0 top-full z-50 mt-2 w-64 translate-y-1 rounded-2xl border border-blue-100 bg-white p-2 opacity-0 shadow-xl transition-all group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100">
+                        {(isPartner
+                          ? [
+                              { label: 'View Profile', icon: User, action: () => navigate('/merchant/info') },
+                              { label: 'Tổng quan', icon: LayoutDashboard, action: () => openMerchantPage('overview') },
+                              { label: 'Quản lí các chuyến', icon: Bus, action: () => openMerchantPage('operations') },
+                              { label: 'Yêu cầu hoàn tiền', icon: RefreshCw, action: () => openMerchantPage('refunds') },
+                              { label: 'Báo cáo doanh thu', icon: BarChart3, action: () => openMerchantPage('analytics') },
+                              { label: 'Đánh giá', icon: Star, action: () => openMerchantPage('feedback') },
+                              { label: 'Tin nhắn', icon: MessageCircle, action: () => openMerchantPage('messages') },
+                            ]
+                          : userRole === 'Customer'
+                            ? [{ label: 'View Profile', icon: User, action: () => navigate('/profile') }]
+                            : [{ label: 'Quản trị', icon: LayoutDashboard, action: () => navigate('/admin') }]
+                        ).map(({ label, icon: Icon, action }) => (
+                          <button
+                            key={label}
+                            type="button"
+                            onClick={action}
+                            className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium text-slate-700 transition hover:bg-blue-50 hover:text-blue-800"
+                          >
+                            <Icon className="h-4 w-4" />
+                            {label}
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={handleLogout}
+                          className="mt-1 flex w-full items-center gap-3 rounded-xl border-t border-slate-100 px-3 py-2.5 text-left text-sm font-semibold text-rose-600 hover:bg-rose-50"
+                        >
+                          <LogOut className="h-4 w-4" />
+                          Đăng xuất
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </>
 ) : (
   <div className="flex items-center gap-3">
     <button
@@ -222,6 +319,33 @@ export default function LandingPage() {
           }}
         >
           <div className="max-w-4xl w-full mx-auto px-4">
+            {isPartner ? (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.6, delay: 0.2 }}
+                className="mx-auto max-w-3xl rounded-3xl border border-white/70 bg-white/95 p-8 text-center shadow-2xl backdrop-blur-md md:p-12"
+              >
+                <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-100 text-blue-700">
+                  <Building2 className="h-8 w-8" />
+                </div>
+                <p className="mb-2 text-sm font-bold uppercase tracking-[0.2em] text-blue-700">Cổng đối tác VIỆTGO</p>
+                <h2 className="mb-4 text-3xl font-extrabold leading-tight text-slate-900 md:text-4xl">
+                  Chào mừng nhà xe {partnerName || userName || 'của bạn'}, hãy tiếp tục nào!
+                </h2>
+                <p className="mx-auto mb-7 max-w-xl text-slate-600">
+                  Quản lý chuyến xe, theo dõi doanh thu và hỗ trợ hành khách trên cùng một nền tảng.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => openMerchantPage('overview')}
+                  className="inline-flex items-center gap-2 rounded-xl bg-blue-700 px-6 py-3 font-bold text-white shadow-lg shadow-blue-700/20 transition hover:bg-blue-800"
+                >
+                  <LayoutDashboard className="h-5 w-5" />
+                  Mở trang quản lý
+                </button>
+              </motion.div>
+            ) : (
             <motion.div
               initial={{ opacity: 0, y: -20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -231,44 +355,21 @@ export default function LandingPage() {
               <h2 className="text-4xl md:text-5xl font-bold mb-4 leading-tight">Khám Phá Việt Nam <br /><span className="text-blue-300">Cùng Chúng Tôi</span></h2>
               <p className="text-lg opacity-90 font-light">Đặt vé xe khách dễ dàng, nhanh chóng</p>
             </motion.div>
+            )}
 
+            {!isPartner && (
             <motion.div
+              ref={tripSearchRef}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6, delay: 0.2 }}
               className="bg-white/95 backdrop-blur-md rounded-2xl shadow-2xl p-6 border border-white/20"
             >
               <div className="flex gap-2 mb-6 border-b border-border">
-                <button
-                  onClick={() => setActiveTab('bus')}
-                  className={`flex items-center gap-2 px-6 py-3 border-b-2 transition-colors ${activeTab === 'bus'
-                      ? 'border-primary text-primary'
-                      : 'border-transparent text-muted-foreground hover:text-foreground'
-                    }`}
-                >
+                <div className="flex items-center gap-2 px-6 py-3 border-b-2 border-primary text-primary">
                   <Bus className="w-5 h-5" />
                   <span>Điền thông tin</span>
-                </button>
-                {/* <button
-                  onClick={() => setActiveTab('train')}
-                  className={`flex items-center gap-2 px-6 py-3 border-b-2 transition-colors ${activeTab === 'train'
-                      ? 'border-primary text-primary'
-                      : 'border-transparent text-muted-foreground hover:text-foreground'
-                    }`}
-                >
-                  <Train className="w-5 h-5" />
-                  <span>Tàu Hỏa</span>
-                </button>
-                <button
-                  onClick={() => setActiveTab('flight')}
-                  className={`flex items-center gap-2 px-6 py-3 border-b-2 transition-colors ${activeTab === 'flight'
-                      ? 'border-primary text-primary'
-                      : 'border-transparent text-muted-foreground hover:text-foreground'
-                    }`}
-                >
-                  <Plane className="w-5 h-5" />
-                  <span>Máy Bay</span>
-                </button> */}
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
@@ -395,8 +496,41 @@ export default function LandingPage() {
                 Tìm Chuyến
               </button>
             </motion.div>
+            )}
           </div>
         </section>
+
+        {!isPartner && (
+          <section className="bg-white px-4 py-14 sm:px-6 lg:px-8">
+            <div className="mx-auto max-w-7xl">
+              <h2 className="mb-7 text-2xl font-bold text-slate-900">Tuyến đường phổ biến</h2>
+              <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+                {popularRoutes.map((route) => (
+                  <button
+                    key={route.label}
+                    type="button"
+                    onClick={() => selectPopularRoute(route.from, route.to)}
+                    className="group overflow-hidden rounded-xl text-left shadow-sm transition hover:-translate-y-1 hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                    aria-label={`Tìm chuyến từ ${route.from} đến ${route.to}`}
+                  >
+                    <div className="h-48 overflow-hidden">
+                      <img
+                        src={route.image}
+                        alt={route.label}
+                        loading="lazy"
+                        className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
+                      />
+                    </div>
+                    <div className={`${route.color} p-4 text-white`}>
+                      <h3 className="text-lg font-bold">{route.label}</h3>
+                      <p className="mt-1 text-sm text-white/90">Chọn tuyến để tìm chuyến xe</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* Why Choose Us Section */}
         <section className="py-20 bg-slate-50">
@@ -485,7 +619,7 @@ export default function LandingPage() {
                 <h3 className="text-2xl font-bold text-white">VIỆTGO</h3>
               </div>
               <p className="text-sm text-slate-400 mb-6">
-                Nền tảng đặt vé xe khách, tàu hỏa và máy bay hàng đầu tại Việt Nam. Đồng hành cùng bạn trên mọi nẻo đường.
+                Nền tảng đặt vé xe khách thuận tiện tại Việt Nam. Đồng hành cùng bạn trên mọi nẻo đường.
               </p>
               <div className="flex gap-4">
                 <a href="#" className="hover:text-white transition-colors"><Facebook className="w-5 h-5" /></a>
@@ -498,8 +632,6 @@ export default function LandingPage() {
               <h4 className="text-white font-semibold mb-4">Dịch vụ</h4>
               <ul className="space-y-2 text-sm">
                 <li><a href="#" className="hover:text-white transition-colors">Vé xe khách</a></li>
-                <li><a href="#" className="hover:text-white transition-colors">Vé tàu hỏa</a></li>
-                <li><a href="#" className="hover:text-white transition-colors">Vé máy bay</a></li>
                 <li><a href="#" className="hover:text-white transition-colors">Dịch vụ vận chuyển</a></li>
               </ul>
             </div>

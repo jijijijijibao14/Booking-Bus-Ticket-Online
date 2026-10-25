@@ -2,10 +2,8 @@ import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Bus,
-  Plane,
   QrCode,
   Timer,
-  Train,
   Wallet,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -14,7 +12,7 @@ import axios from 'axios';
 import { confirmRoundtripBooking } from '@/api';
 import { type BookingPayload, useBooking } from './useBooking';
 
-type VehicleType = 'Bus' | 'Train' | 'Flight';
+type VehicleType = 'Bus';
 
 export default function CheckoutPage() {
   const navigate = useNavigate();
@@ -431,14 +429,8 @@ export default function CheckoutPage() {
       case 'Bus':
         return <Bus className="w-6 h-6 text-primary" />;
 
-      case 'Train':
-        return <Train className="w-6 h-6 text-primary" />;
-
-      case 'Flight':
-        return <Plane className="w-6 h-6 text-primary" />;
-
       default:
-        return null;
+        return <Bus className="w-6 h-6 text-primary" />;
     }
   };
 

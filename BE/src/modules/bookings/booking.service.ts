@@ -1,7 +1,6 @@
 import redisClient from '../../config/redis.js';
 import pool from '../../config/database.js';
 import { generateQRCode } from '../../utils/qrcode.util.js';
-import { generateTrainSeats, getTempIdToSeatNumberMap } from '../trips/train-layout.util.js';
 import { CustomError } from '../../utils/customError.js';
 import { PoolConnection, RowDataPacket } from 'mysql2/promise';
 
@@ -12,7 +11,6 @@ interface PassengerInfo {
     name: string;
     price: number;
     seatId?: number;
-    idCard?: string;
     phone?: string;
     email?: string;
     gender?: string;
@@ -21,10 +19,9 @@ interface PassengerInfo {
 }
 
 interface BookingPayload {
-    tripId: number | string;
-    vehicleType: 'Bus' | 'Train' | 'Flight';
+    tripId: number;
+    vehicleType: 'Bus';
     seatIds?: number[];
-    classId?: number;
     contactInfo: { fullName: string; email: string; phone: string; };
     passengers: PassengerInfo[];
     totalAmount: number;
@@ -55,11 +52,10 @@ interface BookingDetailsForCancellation extends RowDataPacket {
   booking_id: number;
   user_id: number;
   total_amount: number;
-  payment_status: 'Pending' | 'Paid' | 'Refunded';
+  payment_status: 'Pending' | 'Paid' | 'Refunded' | 'Cancelled';
   departure_time: Date;
   booking_code: string;
-  vehicle_type: 'Bus' | 'Train' | 'Flight';
-  partner_id: number | null; // Null for Train/Flight
+  partner_id: number | null;
 }
 
 export class BookingService {
@@ -334,7 +330,7 @@ export class BookingService {
    * Nhả Redis lock cho một payload xe khách.
    * Dùng sau commit hoặc rollback để không để ghế bị giữ đến hết TTL.
    */
-  private async unlockBusPayloadSeats(
+  private async unlockPayloadSeats(
     payload: BookingPayload,
     userId: number,
   ): Promise<void> {
@@ -358,48 +354,25 @@ export class BookingService {
   private async releaseBookingInventory(
     connection: PoolConnection,
     bookingId: number,
-    vehicleType: 'Bus' | 'Train' | 'Flight',
   ): Promise<void> {
-    if (vehicleType === 'Bus' || vehicleType === 'Train') {
-      const [tickets]: any = await connection.query(
-        `SELECT seat_id
-         FROM tickets
-         WHERE booking_id = ?`,
-        [bookingId],
-      );
-
-      const seatIdsToRelease = tickets
-        .map((ticket: any) => ticket.seat_id)
-        .filter(Boolean);
-
-      if (seatIdsToRelease.length > 0) {
-        await connection.query(
-          `UPDATE seats
-           SET status = 'Available'
-           WHERE seat_id IN (?)
-             AND status = 'Booked'`,
-          [seatIdsToRelease],
-        );
-      }
-
-      return;
-    }
-
-    const [ticketGroups]: any = await connection.query(
-      `SELECT class_id, COUNT(ticket_id) AS num_tickets
+    const [tickets]: any = await connection.query(
+      `SELECT seat_id
        FROM tickets
-       WHERE booking_id = ?
-         AND class_id IS NOT NULL
-       GROUP BY class_id`,
+       WHERE booking_id = ?`,
       [bookingId],
     );
 
-    for (const ticketGroup of ticketGroups) {
+    const seatIdsToRelease = tickets
+      .map((ticket: any) => ticket.seat_id)
+      .filter(Boolean);
+
+    if (seatIdsToRelease.length > 0) {
       await connection.query(
-        `UPDATE flight_ticket_classes
-         SET available_slots = available_slots + ?
-         WHERE class_id = ?`,
-        [ticketGroup.num_tickets, ticketGroup.class_id],
+        `UPDATE seats
+         SET status = 'Available'
+         WHERE seat_id IN (?)
+           AND status = 'Booked'`,
+        [seatIdsToRelease],
       );
     }
   }
@@ -416,164 +389,45 @@ export class BookingService {
     bookingCode: string;
     firstTicketQr: string | null;
   }> {
-    let { tripId, vehicleType, seatIds, classId, contactInfo, passengers, totalAmount } = payload;
-    const originalTripIdForLock = tripId;
+    const { tripId, seatIds, contactInfo, passengers, totalAmount } = payload;
 
     const paymentMethod = payload.paymentMethod ?? 'Wallet';
     const bookingPaymentStatus = paymentMethod === 'VNPAY' ? 'Pending' : 'Paid';
 
-    if ((vehicleType === 'Bus' || vehicleType === 'Train') && (!seatIds || seatIds.length === 0)) {
-      throw new Error('Yêu cầu đặt vé không hợp lệ: Vui lòng chọn ít nhất một ghế.');
-    }
-    
-    // 1. XÁC MINH KHÓA GHẾ (CHỈ ÁP DỤNG CHO XE KHÁCH)
-    // Kiểm tra xem người dùng hiện tại có đang giữ các ghế đã chọn không. Đối với tàu hỏa và máy bay,
-    // việc kiểm tra xung đột được xử lý ở bước cập nhật CSDL cuối cùng.
-    if (vehicleType === 'Bus' && seatIds) {
-      for (const seatId of seatIds) {
-        const lockKey = `lock:trip:${originalTripIdForLock}:seat:${seatId}`;
-        const lockedBy = await redisClient.get(lockKey);
-        if (lockedBy !== userId.toString()) {
-          throw new Error(`Ghế ID ${seatId} không được bạn giữ hoặc đã hết hạn giữ chỗ. Vui lòng chọn lại.`);
-        }
-      }
+    if (
+      !Number.isInteger(tripId) ||
+      !seatIds ||
+      seatIds.length === 0 ||
+      seatIds.length !== passengers.length ||
+      new Set(seatIds).size !== seatIds.length
+    ) {
+      throw new Error('Yêu cầu đặt vé không hợp lệ: Vui lòng chọn một ghế cho mỗi hành khách.');
     }
 
-      // XỬ LÝ THUẬT TOÁN ĐỊNH DANH "TRIP_ID CHUỖI" (JIT Physicalization)
-      if (typeof tripId === 'string' && tripId.startsWith('MOCK|')) {
-        const parts = tripId.split('|'); // MOCK | TYPE | CODE | FROM | TO | DATE | TIME
-        const vType = parts[1];
-        const vCode = parts[2];
-        const from = parts[3];
-        const to = parts[4];
-        const timeFromId = parts[6].replace('-', ':'); // Chuyển đổi HH-mm ngược lại thành HH:mm
-        const depDateTime = `${parts[5]} ${timeFromId}:00`;
-
-        // VALIDATION: Không cho đặt vé chuyến đi đã khởi hành
-        if (new Date(depDateTime) < new Date()) {
-          throw new Error('Chuyến đi đã khởi hành. Không thể đặt vé.');
-        }
-
-        // CẢI TIẾN: Suy luận tên phương tiện thật TRƯỚC KHI truy vấn
-        let vehicleNameToFind: string;
-        if (vehicleType === 'Train') {
-          vehicleNameToFind = 'Đường sắt Việt Nam';
-        } else if (vehicleType === 'Flight') {
-          const prefix = vCode.substring(0, 2).toUpperCase();
-          if (prefix === 'VN') vehicleNameToFind = 'Vietnam Airlines';
-          else if (prefix === 'VJ') vehicleNameToFind = 'VietJet Air';
-          else if (prefix === 'QH') vehicleNameToFind = 'Bamboo Airways';
-          else throw new Error(`Không nhận dạng được hãng bay từ mã chuyến ${vCode}.`);
-        } else {
-          vehicleNameToFind = vCode;
-        }
-
-        // Kiểm tra xem chuyến đi vãng lai này đã được "vật lý hóa" trước đó chưa
-        const [existingTrips]: any = await connection.query(
-          `SELECT trip_id FROM trips t 
-           JOIN routes r ON t.route_id = r.route_id 
-           JOIN vehicles v ON t.vehicle_id = v.vehicle_id
-           WHERE v.vehicle_name = ? AND t.departure_time = ? AND r.departure_location = ? AND r.arrival_location = ? AND r.vehicle_type = ?`,
-          [vehicleNameToFind, depDateTime, from, to, vehicleType]
+    for (const seatId of seatIds) {
+      const lockKey = `lock:trip:${tripId}:seat:${seatId}`;
+      const lockedBy = await redisClient.get(lockKey);
+      if (lockedBy !== userId.toString()) {
+        throw new Error(
+          `Ghế ID ${seatId} không được bạn giữ hoặc đã hết hạn giữ chỗ. Vui lòng chọn lại.`,
         );
-
-        if (existingTrips.length > 0) {
-          tripId = existingTrips[0].trip_id;
-          // CẢI TIẾN: Nếu trip đã tồn tại, phải tìm classId tương ứng cho chuyến bay
-          if (vehicleType === 'Flight') {
-            const [classRows]: any = await connection.query(
-              `SELECT class_id FROM flight_ticket_classes WHERE trip_id = ? AND class_type = 'Economy' LIMIT 1`,
-              [tripId]
-            );
-            if (classRows.length > 0) {
-              classId = classRows[0].class_id;
-            } else {
-              // Trường hợp hiếm: trip có nhưng class không có -> tạo mới để đảm bảo logic
-              const [newClass]: any = await connection.query(
-               `INSERT INTO flight_ticket_classes (trip_id, class_type, total_slots, available_slots, price_markup) 
-                VALUES (?, 'Economy', 100, 100, 0)`, [tripId]);
-              classId = newClass.insertId;
-            }
-          }
-        } else {
-          // Nếu chưa có, tạo Route và Trip vật lý
-          // FIX: Tìm route, nếu không có thì tự động tạo (đúng với tinh thần JIT)
-          const [routeRows]: any = await connection.query(
-            `SELECT route_id FROM routes WHERE departure_location = ? AND arrival_location = ? AND vehicle_type = ?`,
-            [from, to, vehicleType]
-          );
-          let routeId;
-          if (routeRows.length > 0) {
-            routeId = routeRows[0].route_id;
-          } else {
-            const [newRoute]: any = await connection.query(
-              `INSERT INTO routes (departure_location, arrival_location, vehicle_type) VALUES (?, ?, ?)`,
-              [from, to, vehicleType]
-            );
-            routeId = newRoute.insertId;
-          }
-
-          const [vehicleRows]: any = await connection.query(
-            `SELECT vehicle_id FROM vehicles WHERE vehicle_name = ? AND vehicle_type = ?`,
-            [vehicleNameToFind, vehicleType]
-          );
-          let vehicleId;
-          if (vehicleRows.length > 0) {
-            vehicleId = vehicleRows[0].vehicle_id;
-          } else {
-            // JIT: Tự động tạo vehicle nếu chưa có
-            const defaultSeats = vehicleType === 'Train' ? 400 : 180; // Số ghế mặc định cho mục đích tham khảo
-            const [newVehicle]: any = await connection.query(
-              `INSERT INTO vehicles (partner_id, vehicle_name, vehicle_type, total_seats) VALUES (?, ?, ?, ?)`,
-              [null, vehicleNameToFind, vehicleType, defaultSeats]
-            );
-            vehicleId = newVehicle.insertId;
-          }
-
-          const arrivalTime = new Date(new Date(depDateTime).getTime() + (vehicleType === 'Train' ? 12 : 2) * 60 * 60 * 1000);
-          const basePrice = payload.passengers?.[0]?.price || payload.totalAmount / (payload.passengers?.length || 1);
-
-          const [newTrip]: any = await connection.query(
-            `INSERT INTO trips (route_id, vehicle_id, departure_time, arrival_time, base_price, status) 
-             VALUES (?, ?, ?, ?, ?, 'Scheduled')`,
-            [routeId, vehicleId, depDateTime, arrivalTime, basePrice] // Sử dụng ID thật
-          );
-          tripId = newTrip.insertId;
-          
-          // Nếu là máy bay, cần tạo thêm các hạng vé (classes) ảo trong DB để khớp khóa ngoại
-          if (vehicleType === 'Flight') {
-             const [newClass]: any = await connection.query(
-               `INSERT INTO flight_ticket_classes (trip_id, class_type, total_slots, available_slots, price_markup) 
-                VALUES (?, 'Economy', 100, 100, 0)`, [tripId]);
-             classId = newClass.insertId; // Gán classId mới tạo
-          }
-          // FIX: Nếu là tàu hỏa, "vật lý hóa" toàn bộ ghế ngồi cho chuyến đi mới này
-          else if (vehicleType === 'Train') {
-            const seatNumbers = generateTrainSeats('seat_number_only');
-            const seatInsertData = seatNumbers.map(seatNumber => [tripId as number, seatNumber, 'Available']);
-
-            // Bulk insert toàn bộ ghế vào DB cho chuyến đi mới
-            if (seatInsertData.length > 0) {
-              await connection.query(
-                'INSERT INTO seats (trip_id, seat_code, status) VALUES ?', 
-                [seatInsertData]
-              );
-            }
-          }
-        }
       }
-      // VALIDATION: Đối với các chuyến đi thật (Bus), kiểm tra lại thời gian khởi hành
-      else if (typeof tripId === 'number') {
-        const [tripRows]: any = await connection.query(
-            `SELECT departure_time FROM trips WHERE trip_id = ? AND departure_time > NOW()`,
-            [tripId]
-        );
-        if (tripRows.length === 0) {
-            throw new Error('Chuyến đi đã khởi hành hoặc không tồn tại. Không thể đặt vé.');
-        }
-      }
+    }
 
-      // Sinh mã PNR (Booking Code) ngẫu nhiên 6 ký tự
+    const [tripRows]: any = await connection.query(
+      `SELECT trip_id
+       FROM trips
+       WHERE trip_id = ?
+         AND departure_time > NOW()
+         AND status = 'Scheduled'
+       FOR UPDATE`,
+      [tripId],
+    );
+
+    if (tripRows.length === 0) {
+      throw new Error('Chuyến xe đã khởi hành hoặc không tồn tại.');
+    }
+
       const bookingCode = Math.random().toString(36).substring(2, 8).toUpperCase();
 
       // 2. Insert vào bảng `bookings`.
@@ -605,79 +459,22 @@ export class BookingService {
       }
       const bookingId = bookingResult.insertId;
 
-      // FIX: Khai báo map ở scope cao hơn để có thể truy cập ở bước 4
-      const passengerToRealSeatIdMap = new Map<PassengerInfo, number>();
+      const [updateResult]: any = await connection.query(
+        `UPDATE seats
+         SET status = 'Booked'
+         WHERE trip_id = ?
+           AND seat_id IN (?)
+           AND status = 'Available'`,
+        [tripId, seatIds],
+      );
 
-      // FIX: Khai báo wasMockTrainTrip ở scope cao hơn để có thể truy cập ở nhiều nơi.
-      // Biến này dùng để xác định xem đây có phải là luồng đặt vé cho chuyến tàu được sinh tự động (JIT) hay không.
-      const wasMockTrainTrip = typeof originalTripIdForLock === 'string' && vehicleType === 'Train';
-
-      // 3. Logic Đa Hình (Polymorphism) Xử lý theo Phương tiện
-      if (vehicleType === 'Flight') {
-        // MÁY BAY: Kiểm tra và trừ lùi vé trống
-        const [classRows]: any = await connection.query(`SELECT available_slots FROM flight_ticket_classes WHERE class_id = ? FOR UPDATE`, [classId!]);
-        if (classRows.length === 0 || classRows[0].available_slots < passengers.length) {
-          throw new Error('Không đủ ghế trống cho hạng vé máy bay này.');
-        }
-        await connection.query(`UPDATE flight_ticket_classes SET available_slots = available_slots - ? WHERE class_id = ?`, [passengers.length, classId!]);
-        
-      } else { // Logic cho Xe khách và Tàu hỏa
-        if (wasMockTrainTrip) {
-          // Với chuyến tàu JIT, chúng ta phải map từ ID ghế tạm thời sang mã ghế (seat_number)
-          // để cập nhật đúng ghế trong DB và lấy ID thật của nó.
-          // TỐI ƯU HÓA: Tránh N+1 query bằng cách cập nhật và lấy ID một lần.
-          const tempIdToSeatNumberMap = getTempIdToSeatNumberMap();
-          // Cải thiện type-safety: Dùng map và type guard để lọc ra các giá trị undefined một cách an toàn.
-          const seatNumbersToBook = passengers
-            .map(p => tempIdToSeatNumberMap.get(p.seatId!))
-            .filter((seatNumber): seatNumber is string => Boolean(seatNumber));
-
-          if (seatNumbersToBook.length !== passengers.length) {
-            throw new Error('Lỗi hệ thống: Không thể map ID ghế tạm thời sang mã ghế thật.');
-          }
-
-          // 1. Cập nhật tất cả ghế trong một query
-          const [updateResult]: any = await connection.query(
-            `UPDATE seats SET status = 'Booked' WHERE trip_id = ? AND seat_code IN (?) AND status = 'Available'`,
-            [tripId, seatNumbersToBook]
-          );
-          if (updateResult.affectedRows !== seatNumbersToBook.length) {
-            throw new Error('Một hoặc nhiều ghế đã có người mua trong lúc bạn thao tác. Vui lòng thử lại.');
-          }
-
-          // 2. Lấy tất cả ID ghế thật trong một query
-          const [seatRows] = await connection.query<SeatDbRow[]>(`SELECT seat_id, seat_code FROM seats WHERE trip_id = ? AND seat_code IN (?)`, [tripId, seatNumbersToBook]);
-          const seatNumberToRealIdMap = new Map(seatRows.map((row) => [row.seat_code, row.seat_id]));
-
-          // 3. Map lại cho từng hành khách
-          passengers.forEach(p => {
-            const seatNumber = tempIdToSeatNumberMap.get(p.seatId!);
-            const realSeatId: number | undefined = seatNumberToRealIdMap.get(seatNumber!);
-            if (realSeatId) {
-              passengerToRealSeatIdMap.set(p, realSeatId);
-            }
-          });
-        } else { 
-          // Với chuyến xe khách (hoặc tàu đã có sẵn), `seatIds` từ payload là ID thật
-          if (!seatIds || seatIds.length === 0 || seatIds.length !== passengers.length) {
-            throw new Error('Dữ liệu ghế và hành khách không khớp.');
-          }
-          // TỐI ƯU HÓA: Cập nhật tất cả ghế trong một query để tránh N+1
-          const [updateResult]: any = await connection.query(
-            `UPDATE seats SET status = 'Booked' WHERE trip_id = ? AND seat_id IN (?) AND status = 'Available'`,
-            [tripId, seatIds]
-          );
-
-          if (updateResult.affectedRows !== seatIds.length) {
-            throw new Error('Một hoặc nhiều ghế đã có người mua trong lúc bạn thao tác. Vui lòng thử lại.');
-          }
-
-          // Map lại cho từng hành khách
-          for (let i = 0; i < seatIds.length; i++) {
-            passengerToRealSeatIdMap.set(passengers[i], seatIds[i]);
-          }
-        }
+      if (updateResult.affectedRows !== seatIds.length) {
+        throw new Error('Một hoặc nhiều ghế đã có người mua trong lúc bạn thao tác. Vui lòng thử lại.');
       }
+
+      const passengerToSeatId = new Map(
+        passengers.map((passenger, index) => [passenger, seatIds[index]]),
+      );
 
       let firstTicketQr: string | null = null;
 
@@ -685,27 +482,8 @@ export class BookingService {
       for (let i = 0; i < passengers.length; i++) {
         const passenger = passengers[i];
         
-        let assignedSeatId: number | null | undefined;
-        if (vehicleType === 'Flight') {
-          assignedSeatId = null;
-        } else if (wasMockTrainTrip) {
-          // Với tàu JIT, vẫn cần map để lấy ID thật từ map đã tạo ở bước 3
-          assignedSeatId = passengerToRealSeatIdMap.get(passenger);
-        } else { 
-          // Với xe khách (hoặc tàu đã có sẵn), seatId đã là ID thật và có sẵn trong payload của passenger.
-          // Lấy trực tiếp sẽ an toàn và đơn giản hơn dùng Map.
-          assignedSeatId = passenger.seatId;
-        }
-        const assignedClassId = (vehicleType === 'Flight') ? classId : null;   // Xe/Tàu không có class_id
+        const assignedSeatId = passengerToSeatId.get(passenger);
 
-        // Ràng buộc dữ liệu (Validation) dựa trên mô tả dự án
-        if (vehicleType === 'Train' && !passenger.idCard) throw new Error('Tàu hỏa bắt buộc phải nhập CCCD cho từng vé.');
-        // CẢI TIẾN: Chỉ bắt buộc SĐT/Email cho hành khách người lớn trên chuyến bay
-        if (vehicleType === 'Flight' && passenger.type === 'Adult' && (!passenger.email || !passenger.phone)) {
-          throw new Error('Máy bay bắt buộc nhập SĐT và Email cho hành khách người lớn.');
-        }
-
-        // Sinh mã QR
         const qrData = `PNR:${bookingCode}|TICKET:${i+1}|NAME:${passenger.name}`;
         const qrCodeBase64 = await generateQRCode(qrData);
 
@@ -714,12 +492,18 @@ export class BookingService {
         }
 
         const [ticketResult]: any = await connection.query(
-          `INSERT INTO tickets (booking_id, seat_id, class_id, passenger_name, passenger_id_card, passenger_email, passenger_phone, ticket_price, qr_code_data) 
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO tickets (
+             booking_id, seat_id, passenger_name,
+             passenger_email, passenger_phone, ticket_price, qr_code_data
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
           [
-            bookingId, assignedSeatId, assignedClassId, 
-            passenger.name, passenger.idCard || null, passenger.email || null, passenger.phone || null, 
-            passenger.price, qrCodeBase64
+            bookingId,
+            assignedSeatId,
+            passenger.name,
+            passenger.email || null,
+            passenger.phone || null,
+            passenger.price,
+            qrCodeBase64,
           ]
         );
         // Thêm kiểm tra để đảm bảo vé được tạo
@@ -796,7 +580,7 @@ export class BookingService {
       await connection.commit();
 
       // Nhả Redis lock sau khi dữ liệu DB đã commit thành công.
-      await this.unlockBusPayloadSeats(payload, userId);
+      await this.unlockPayloadSeats(payload, userId);
 
       return {
         success: true,
@@ -814,7 +598,7 @@ export class BookingService {
 
       // Không để ghế xe khách bị giữ đến hết TTL khi transaction thất bại.
       try {
-        await this.unlockBusPayloadSeats(payload, userId);
+        await this.unlockPayloadSeats(payload, userId);
       } catch (unlockError) {
         console.error('Không thể nhả Redis lock sau rollback:', unlockError);
       }
@@ -915,8 +699,8 @@ export class BookingService {
       await connection.commit();
 
       await Promise.all([
-        this.unlockBusPayloadSeats(departurePayload, userId),
-        this.unlockBusPayloadSeats(returnPayload, userId),
+        this.unlockPayloadSeats(departurePayload, userId),
+        this.unlockPayloadSeats(returnPayload, userId),
       ]);
 
       return {
@@ -941,8 +725,8 @@ export class BookingService {
 
       // Rollback DB + nhả Redis lock cả hai chiều.
       await Promise.allSettled([
-        this.unlockBusPayloadSeats(departurePayload, userId),
-        this.unlockBusPayloadSeats(returnPayload, userId),
+        this.unlockPayloadSeats(departurePayload, userId),
+        this.unlockPayloadSeats(returnPayload, userId),
       ]);
 
       console.error(
@@ -974,7 +758,7 @@ export class BookingService {
             CASE
                 WHEN b.refund_status = 'Approved' THEN 'Cancelled' -- Đã hủy và hoàn tiền thành công
                 WHEN b.refund_status = 'Rejected' THEN 'CancellationRejected' -- Bị từ chối, cũng coi như đã hủy/thất bại
-                WHEN b.payment_status = 'Refunded' THEN 'Cancelled' -- Đã hủy tự động (vé chưa thanh toán)
+                WHEN b.payment_status IN ('Refunded', 'Cancelled') THEN 'Cancelled'
                 WHEN b.refund_status = 'Pending' THEN 'CancellationPending' -- Chờ nhà xe xử lý
                 WHEN b.refund_status = 'WaitRefund' THEN 'RefundPending' -- Chờ admin hoàn tiền
                 WHEN b.payment_status = 'Pending' THEN 'PaymentPending'
@@ -1006,13 +790,15 @@ export class BookingService {
         `SELECT t.ticket_id, t.booking_id, t.passenger_name, t.ticket_price,
                 tr.departure_time, tr.arrival_time,
                 r.departure_location, r.arrival_location,
-                v.vehicle_name, v.vehicle_type
+                v.vehicle_name, v.vehicle_type,
+                f.feedback_id, f.rating_seats, f.rating_service, f.comment,
+                f.partner_reply, f.partner_replied_at
          FROM tickets t
-         LEFT JOIN seats s ON t.seat_id = s.seat_id
-         LEFT JOIN flight_ticket_classes ftc ON t.class_id = ftc.class_id
-         JOIN trips tr ON tr.trip_id = COALESCE(s.trip_id, ftc.trip_id)
+         JOIN seats s ON t.seat_id = s.seat_id
+         JOIN trips tr ON tr.trip_id = s.trip_id
          JOIN routes r ON tr.route_id = r.route_id
          JOIN vehicles v ON tr.vehicle_id = v.vehicle_id
+         LEFT JOIN feedbacks f ON f.ticket_id = t.ticket_id
          WHERE t.booking_id IN (?)`,
         [bookingIds]
       );
@@ -1046,16 +832,9 @@ export class BookingService {
             b.booking_id,
             b.user_id,
             b.total_amount,
-            b.payment_status,
-            v.vehicle_type
+            b.payment_status
          FROM bookings b
-         JOIN tickets t ON b.booking_id = t.booking_id
-         LEFT JOIN seats s ON t.seat_id = s.seat_id
-         LEFT JOIN flight_ticket_classes ftc ON t.class_id = ftc.class_id
-         JOIN trips tr ON tr.trip_id = COALESCE(s.trip_id, ftc.trip_id)
-         JOIN vehicles v ON tr.vehicle_id = v.vehicle_id
          WHERE b.booking_code = ?
-         GROUP BY b.booking_id, v.vehicle_type
          FOR UPDATE`,
         [bookingCode],
       );
@@ -1069,7 +848,10 @@ export class BookingService {
 
       const bookingInfo = bookingRows[0];
 
-      if (bookingInfo.payment_status === 'Refunded') {
+      if (
+        bookingInfo.payment_status === 'Refunded' ||
+        bookingInfo.payment_status === 'Cancelled'
+      ) {
         await connection.rollback();
 
         return {
@@ -1089,17 +871,11 @@ export class BookingService {
       await this.releaseBookingInventory(
         connection,
         bookingInfo.booking_id,
-        bookingInfo.vehicle_type,
       );
 
-      /*
-       * Schema hiện tại của project đang dùng Pending/Paid/Refunded.
-       * Tạm dùng Refunded để đánh dấu booking Pending đã đóng.
-       * Khi có trạng thái Cancelled riêng, nên đổi sang Cancelled.
-       */
       await connection.query(
         `UPDATE bookings
-         SET payment_status = 'Refunded'
+         SET payment_status = 'Cancelled'
          WHERE booking_id = ?
            AND payment_status = 'Pending'`,
         [bookingInfo.booking_id],
@@ -1147,9 +923,7 @@ export class BookingService {
   }
 
   /**
-   * Yêu cầu hủy vé và hoàn tiền theo chính sách.
-   * Đối với xe khách, yêu cầu sẽ được gửi đến nhà xe để phê duyệt.
-   * Đối với tàu hỏa và máy bay (dữ liệu ảo), sẽ tự động hủy và hoàn tiền.
+   * Yêu cầu hủy vé xe khách và hoàn tiền theo chính sách.
    * @param userId ID của người dùng yêu cầu hủy.
    * @param bookingCode Mã đặt chỗ cần hủy.
    * @param reason Lý do hủy.
@@ -1168,16 +942,14 @@ export class BookingService {
             b.payment_status,
             t.departure_time,
             b.booking_code,
-            v.vehicle_type,
             v.partner_id
          FROM bookings b
          JOIN tickets tk ON b.booking_id = tk.booking_id
-         LEFT JOIN seats s ON tk.seat_id = s.seat_id
-         LEFT JOIN flight_ticket_classes ftc ON tk.class_id = ftc.class_id
-         JOIN trips t ON t.trip_id = COALESCE(s.trip_id, ftc.trip_id)
+         JOIN seats s ON tk.seat_id = s.seat_id
+         JOIN trips t ON t.trip_id = s.trip_id
          JOIN vehicles v ON t.vehicle_id = v.vehicle_id
          WHERE b.booking_code = ? AND b.user_id = ?
-         GROUP BY b.booking_id, t.departure_time, v.vehicle_type, v.partner_id
+         GROUP BY b.booking_id, t.departure_time, v.partner_id
          FOR UPDATE`, // Lock the booking row
         [bookingCode, userId]
       );
@@ -1256,21 +1028,17 @@ export class BookingService {
 
       const refundAmount = bookingInfo.total_amount * (refundPercentage / 100);
 
-      if (bookingInfo.vehicle_type === 'Bus') {
-        // For Bus, create a pending refund request for partner approval
-        await connection.query(
-          `INSERT INTO refund_requests (booking_id, reason, refund_amount, status, partner_id) VALUES (?, ?, ?, ?, ?)`,
-          [bookingInfo.booking_id, reason, refundAmount, 'Pending', bookingInfo.partner_id]
-        );
-        message = 'Yêu cầu hủy vé của bạn đã được gửi đến nhà xe để phê duyệt.';
-      } else {
-        // Đối với Tàu hỏa và Máy bay, gửi thẳng yêu cầu đến Admin để duyệt
-        await connection.query(
-          `INSERT INTO refund_requests (booking_id, reason, refund_amount, status, partner_id) VALUES (?, ?, ?, ?, ?)`,
-          [bookingInfo.booking_id, reason, refundAmount, 'WaitRefund', null]
-        );
-        message = 'Yêu cầu hủy vé của bạn đã được gửi đến quản trị viên để xử lý.';
-      }
+      await connection.query(
+        `INSERT INTO refund_requests (booking_id, reason, refund_amount, status, partner_id)
+         VALUES (?, ?, ?, 'Pending', ?)`,
+        [
+          bookingInfo.booking_id,
+          reason,
+          refundAmount,
+          bookingInfo.partner_id,
+        ],
+      );
+      message = 'Yêu cầu hủy vé của bạn đã được gửi đến nhà xe để phê duyệt.';
 
       await connection.commit();
 

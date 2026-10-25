@@ -6,28 +6,36 @@ export class TripController {
     try {
       const { from, to, departureDate, type } = req.query;
 
-      if (!from || !to || !departureDate || !type) {
-        res.status(400).json({ 
-          success: false, 
-          message: 'Vui lòng cung cấp đủ thông tin điểm đi, điểm đến, ngày và loại phương tiện.' 
+      if (
+        typeof from !== 'string' ||
+        typeof to !== 'string' ||
+        typeof departureDate !== 'string' ||
+        type !== 'Bus'
+      ) {
+        res.status(400).json({
+          success: false,
+          message: 'Chỉ hỗ trợ tìm kiếm xe khách. Vui lòng cung cấp điểm đi, điểm đến và ngày đi hợp lệ.',
         });
         return;
       }
 
-      // Thêm validation: Điểm đi và điểm đến không được trùng nhau (chuẩn hóa để so sánh)
-      if ((from as string).trim().toLowerCase() === (to as string).trim().toLowerCase()) {
+      if (
+        from.trim().length === 0 ||
+        to.trim().length === 0 ||
+        from.trim().toLowerCase() === to.trim().toLowerCase() ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(departureDate)
+      ) {
         res.status(400).json({
           success: false,
-          message: 'Điểm đi và điểm đến không được trùng nhau.'
+          message: 'Thông tin điểm đi, điểm đến hoặc ngày khởi hành không hợp lệ.',
         });
         return;
       }
 
       const results = await TripService.searchTrips(
-        from as string, 
-        to as string, 
-        departureDate as string, 
-        type as string
+        from,
+        to,
+        departureDate,
       );
       
       res.status(200).json({ 
@@ -54,10 +62,8 @@ export class TripController {
         return;
       }
 
-      // Giải mã hóa (decode) các ký tự %7C, %20... từ URL về dạng chuỗi gốc 'MOCK|Train|...'
       const decodedTripId = decodeURIComponent(tripId as string);
 
-      // Service xử lý phân luồng ID thật (số) và ID mock (chuỗi)
       const layout = await TripService.getSeatLayout(decodedTripId);
       
       res.status(200).json(layout);

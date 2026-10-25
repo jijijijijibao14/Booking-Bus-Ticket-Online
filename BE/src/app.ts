@@ -19,6 +19,8 @@ import tripRoutes from './modules/trips/trip.route.js';
 import adminRoutes from './modules/admin/admin.route.js';
 import paymentRoutes from './modules/payments/payment.route.js';
 import merchantRoutes from './modules/merchant/merchant.route.js';
+import communicationsRoutes from './modules/communications/communications.route.js';
+import feedbackRoutes from './modules/feedback/feedback.route.js';
 
 const app: Application = express();
 
@@ -222,6 +224,9 @@ app.use(
     merchantRoutes,
 );
 
+app.use('/api/communications', communicationsRoutes);
+app.use('/api/feedback', feedbackRoutes);
+
 console.log(
   '✅ Đã đăng ký API: ' +
     '/api/auth, ' +
@@ -230,7 +235,9 @@ console.log(
     '/api/bookings, ' +
     '/api/admin, ' +
     '/api/payments, ' +
-    '/api/merchant',
+    '/api/merchant, ' +
+    '/api/communications, ' +
+    '/api/feedback',
 );
 
 /*
