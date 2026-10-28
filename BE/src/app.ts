@@ -21,6 +21,7 @@ import paymentRoutes from './modules/payments/payment.route.js';
 import merchantRoutes from './modules/merchant/merchant.route.js';
 import communicationsRoutes from './modules/communications/communications.route.js';
 import feedbackRoutes from './modules/feedback/feedback.route.js';
+import { gmailRouter } from './modules/gmail/gmail.route.js';
 
 const app: Application = express();
 
@@ -193,6 +194,7 @@ app.get(
  */
 app.use('/api/auth', authRouter);
 app.use('/api/users', userRouter);
+app.use(gmailRouter);
 
 app.use(
   '/api/trips',
@@ -237,7 +239,8 @@ console.log(
     '/api/payments, ' +
     '/api/merchant, ' +
     '/api/communications, ' +
-    '/api/feedback',
+    '/api/feedback, ' +
+    '/api/gmail',
 );
 
 /*

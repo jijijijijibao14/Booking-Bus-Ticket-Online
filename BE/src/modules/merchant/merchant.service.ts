@@ -1,7 +1,9 @@
 import pool from '../../config/database.js';
+import type { PoolConnection } from 'mysql2/promise';
 import { normalizeLocation } from '../../utils/normalize.util.js';
 import { addHoursLocal, addMinutesLocal } from '../../utils/time.util.js';
 import { generateBusSeats } from '../../utils/seats.util.js';
+import { recordSystemFinancialTransaction } from '../../utils/system-financial.util.js';
 
 class MerchantService {
   // Lấy hồ sơ đối tác (user + partner_profiles)
@@ -331,33 +333,169 @@ class MerchantService {
   }
 
 
-  async getMerchantSchedules(partnerId: number) {
+  private async settleCompletedTrip(connection: PoolConnection, tripId: number, partnerId: number) {
+    await connection.beginTransaction();
     try {
-      const conn = await pool.getConnection();
+      const [tripRows]: any = await connection.query(
+        `SELECT tr.status, v.partner_id AS partnerId
+         FROM trips tr
+         JOIN vehicles v ON v.vehicle_id = tr.vehicle_id
+         WHERE tr.trip_id = ?
+         FOR UPDATE`,
+        [tripId],
+      );
+      if (tripRows.length === 0 || tripRows[0].status !== 'Completed' || Number(tripRows[0].partnerId) !== partnerId) {
+        await connection.rollback();
+        return;
+      }
 
-      // 1. Scheduled → Departed: khi đã qua giờ đi
+      const [pendingRefundRows]: any = await connection.query(
+        `SELECT rr.refund_id
+         FROM refund_requests rr
+         JOIN bookings b ON b.booking_id = rr.booking_id
+         JOIN tickets tk ON tk.booking_id = b.booking_id
+         JOIN seats s ON s.seat_id = tk.seat_id
+         WHERE s.trip_id = ?
+           AND b.payment_status = 'Paid'
+           AND rr.status IN ('Pending', 'WaitRefund')
+         LIMIT 1`,
+        [tripId],
+      );
+      if (pendingRefundRows.length > 0) {
+        await connection.commit();
+        return;
+      }
+
+      const [settlementRows]: any = await connection.query(
+        'SELECT trip_id FROM partner_trip_settlements WHERE trip_id = ?',
+        [tripId],
+      );
+      if (settlementRows.length > 0) {
+        await connection.commit();
+        return;
+      }
+
+      const [settingsRows]: any = await connection.query(
+        'SELECT commission_rate FROM system_commission_settings WHERE setting_id = 1 FOR UPDATE',
+      );
+      if (settingsRows.length === 0) throw new Error('Chưa có cấu hình hoa hồng hệ thống.');
+      const commissionRate = Number(settingsRows[0].commission_rate);
+
+      const [grossRows]: any = await connection.query(
+        `SELECT COALESCE(SUM(tk.ticket_price), 0) AS grossAmount
+         FROM tickets tk
+         JOIN bookings b ON b.booking_id = tk.booking_id
+         JOIN seats s ON s.seat_id = tk.seat_id
+         WHERE s.trip_id = ? AND b.payment_status = 'Paid'`,
+        [tripId],
+      );
+      const grossAmount = Math.round(Number(grossRows[0].grossAmount) * 100) / 100;
+      const commissionAmount = Math.round((grossAmount * commissionRate / 100 + Number.EPSILON) * 100) / 100;
+      const partnerAmount = Math.round((grossAmount - commissionAmount) * 100) / 100;
+
+      await connection.query(
+        `INSERT INTO partner_trip_settlements
+         (trip_id, partner_id, gross_amount, commission_rate, commission_amount, partner_amount)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [tripId, partnerId, grossAmount, commissionRate, commissionAmount, partnerAmount],
+      );
+      if (commissionAmount > 0) {
+        await recordSystemFinancialTransaction(connection, {
+          accountCode: 'SYSTEM_WALLET',
+          transactionType: 'COMMISSION',
+          amount: -commissionAmount,
+          referenceCode: `TRIP-${tripId}`,
+          description: `Chuyển hoa hồng ${commissionRate}% từ chuyến #${tripId}`,
+        });
+        await recordSystemFinancialTransaction(connection, {
+          accountCode: 'COMMISSION_WALLET',
+          transactionType: 'COMMISSION',
+          amount: commissionAmount,
+          referenceCode: `TRIP-${tripId}`,
+          description: `Hoa hồng ${commissionRate}% từ chuyến #${tripId}`,
+        });
+      }
+      if (partnerAmount > 0) {
+        await connection.query(
+          'UPDATE partner_profiles SET withdrawable_balance = withdrawable_balance + ? WHERE partner_id = ?',
+          [partnerAmount, partnerId],
+        );
+      }
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    }
+  }
+
+  async processCompletedTrips(partnerId?: number) {
+    const conn = await pool.getConnection();
+    try {
+      const partnerFilter = partnerId ? ' AND v.partner_id = ?' : '';
+      const partnerParams = partnerId ? [partnerId] : [];
       await conn.query(
         `UPDATE trips tr
          JOIN vehicles v ON tr.vehicle_id = v.vehicle_id
          SET tr.status = 'Departed'
          WHERE tr.departure_time <= NOW()
            AND tr.status = 'Scheduled'
-           AND v.partner_id = ?`,
-        [partnerId]
+           ${partnerFilter}`,
+        partnerParams
       );
 
-      // 2. Departed → Completed: khi đã qua giờ đến
       await conn.query(
         `UPDATE trips tr
          JOIN vehicles v ON tr.vehicle_id = v.vehicle_id
-         SET tr.status = 'Completed'
+         SET tr.status = 'Completed', tr.completed_at = COALESCE(tr.completed_at, NOW())
          WHERE tr.arrival_time <= NOW()
            AND tr.status = 'Departed'
-           AND v.partner_id = ?`,
-        [partnerId]
+           ${partnerFilter}`,
+        partnerParams
       );
 
-      // 3. Cập nhật driver: on-trip khi chuyến đang chạy
+      await conn.query(
+        `UPDATE trips tr
+         JOIN vehicles v ON tr.vehicle_id = v.vehicle_id
+         SET tr.completed_at = COALESCE(tr.actual_arrival_time, tr.arrival_time, NOW())
+         WHERE tr.status = 'Completed'
+           AND tr.completed_at IS NULL
+           ${partnerFilter}`,
+        partnerParams
+      );
+
+      const [unsettledTrips]: any = await conn.query(
+        `SELECT tr.trip_id AS tripId, v.partner_id AS partnerId
+         FROM trips tr
+         JOIN vehicles v ON v.vehicle_id = tr.vehicle_id
+         LEFT JOIN partner_trip_settlements pts ON pts.trip_id = tr.trip_id
+         WHERE tr.status = 'Completed' AND pts.trip_id IS NULL
+           AND NOT EXISTS (
+             SELECT 1
+             FROM refund_requests rr
+             JOIN bookings b ON b.booking_id = rr.booking_id
+             JOIN tickets tk ON tk.booking_id = b.booking_id
+             JOIN seats s ON s.seat_id = tk.seat_id
+             WHERE s.trip_id = tr.trip_id
+               AND b.payment_status = 'Paid'
+               AND rr.status IN ('Pending', 'WaitRefund')
+           )${partnerFilter}`,
+        partnerParams,
+      );
+      for (const trip of unsettledTrips) {
+        await this.settleCompletedTrip(conn, Number(trip.tripId), partnerId ?? Number(trip.partnerId));
+      }
+      return unsettledTrips.length;
+    } catch (err) {
+      throw new Error(`Lỗi quyết toán chuyến hoàn thành: ${err}`);
+    } finally {
+      conn.release();
+    }
+  }
+
+  async getMerchantSchedules(partnerId: number) {
+    await this.processCompletedTrips(partnerId);
+    const conn = await pool.getConnection();
+    try {
       await conn.query(
         `UPDATE drivers dr
          JOIN trips tr ON dr.driver_id = tr.driver_id
@@ -371,7 +509,6 @@ class MerchantService {
         [partnerId]
       );
 
-      // 4. Trả driver về available khi chuyến đã hoàn thành
       await conn.query(
         `UPDATE drivers dr
          JOIN trips tr ON dr.driver_id = tr.driver_id
@@ -413,10 +550,11 @@ class MerchantService {
          LIMIT 50`,
         [partnerId]
       );
-      conn.release();
       return rows;
     } catch (err) {
       throw new Error(`Lỗi lấy lịch trình: ${err}`);
+    } finally {
+      conn.release();
     }
   }
 

@@ -5,17 +5,28 @@ import { verifyToken, verifyRole } from '../../middlewares/auth.middleware.js';
 const router = Router();
 const adminController = new AdminController();
 
-// Bức tường bảo vệ: Phải đăng nhập VÀ có quyền Platform Admin mới được đi qua
 router.use(verifyToken, verifyRole(['Admin']));
 
-router.get('/schedules', adminController.getSchedules);
-router.get('/fleet', adminController.getFleet);
+router.get('/overview', adminController.getOverview);
+router.get('/commission-settings', adminController.getCommissionSettings);
+router.put('/commission-settings', adminController.updateCommissionSettings);
+router.get('/customers', adminController.getCustomers);
+router.get('/partners', adminController.getPartners);
+router.patch('/users/:id/status', adminController.updateAccountStatus);
 
 router.get('/approvals', adminController.getApprovals);
 router.post('/approvals/:merchantId', adminController.handleMerchantAction);
 
-// Routes cho luồng hoàn tiền của Admin
 router.get('/refunds/waiting', adminController.getWaitingRefunds);
+router.get('/refunds/history', adminController.getRefundHistory);
 router.patch('/refunds/:id/process', adminController.processAdminRefund);
+
+router.get('/tickets', adminController.getTickets);
+router.get('/payments', adminController.getPayments);
+router.patch('/payments/:id/close', adminController.closeFailedPayment);
+
+router.get('/payouts', adminController.getPartnerPayouts);
+router.post('/partners/:partnerId/payouts', adminController.createPartnerPayout);
+router.get('/financial-activity', adminController.getFinancialActivity);
 
 export default router;

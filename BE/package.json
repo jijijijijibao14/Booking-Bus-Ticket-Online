@@ -7,6 +7,7 @@
     "test": "tsx --test src/modules/merchant/recurring-schedule.util.test.ts",
     "build": "tsc",
     "create-admin": "tsx src/scripts/create-admin.ts",
+    "reset-admin-password": "tsx src/scripts/reset-admin-password.ts",
     "migrate-passwords": "tsx src/scripts/migrate-passwords.ts",
     "start": "node dist/server.js",
     "dev": "nodemon"
@@ -35,6 +36,7 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "google-auth-library": "^10.9.0",
+    "googleapis": "^188.0.0",
     "ioredis": "^5.11.1",
     "jsonwebtoken": "^9.0.3",
     "mysql2": "^3.22.6",

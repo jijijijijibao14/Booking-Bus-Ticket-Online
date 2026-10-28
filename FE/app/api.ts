@@ -111,7 +111,9 @@ export const forgotPassword = (
 
 export const resetPassword = (
   data: {
-    token: string;
+    token?: string;
+    email?: string;
+    otp?: string;
     newPassword: string;
   },
 ) => {
@@ -397,11 +399,38 @@ export const getWalletTransactions = () => {
 };
 
 // --- Admin ---
-export const getMerchantApprovals =
-  () => {
-    // Route được định nghĩa trong admin.route.ts là /approvals
-    return apiClient.get('/admin/approvals');
-  };
+export type AdminListFilters = {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  status?: string;
+  fromDate?: string;
+  toDate?: string;
+  direction?: 'in' | 'out';
+};
+
+export const getAdminOverview = (params: AdminListFilters = {}) =>
+  apiClient.get('/admin/overview', { params });
+
+export const getAdminCommissionSettings = () =>
+  apiClient.get('/admin/commission-settings');
+
+export const updateAdminCommissionSettings = (commissionRate: number) =>
+  apiClient.put('/admin/commission-settings', { commissionRate });
+
+export const getAdminCustomers = (params: AdminListFilters = {}) =>
+  apiClient.get('/admin/customers', { params });
+
+export const getAdminPartners = (params: AdminListFilters = {}) =>
+  apiClient.get('/admin/partners', { params });
+
+export const updateAdminAccountStatus = (
+  id: number,
+  action: 'suspend' | 'activate' | 'delete',
+) => apiClient.patch(`/admin/users/${id}/status`, { action });
+
+export const getMerchantApprovals = (params: AdminListFilters = {}) =>
+  apiClient.get('/admin/approvals', { params });
 
 export const processMerchantApproval = (
   merchantId: string,
@@ -416,24 +445,39 @@ export const processMerchantApproval = (
   );
 };
 
-export const getAdminSchedules = () =>
-  apiClient.get('/admin/schedules');
+export const getWaitingRefunds = (params: AdminListFilters = {}) =>
+  apiClient.get('/admin/refunds/waiting', { params });
 
-export const getWaitingRefunds = () => {
-  return apiClient.get('/admin/refunds/waiting');
-};
+export const getAdminRefundHistory = (params: AdminListFilters = {}) =>
+  apiClient.get('/admin/refunds/history', { params });
 
 export const processAdminRefund = (
-  id: string,
+  id: string | number,
   action: 'approve' | 'reject',
 ) => {
   return apiClient.patch(`/admin/refunds/${id}/process`, { action });
 };
 
+export const getAdminTickets = (params: AdminListFilters = {}) =>
+  apiClient.get('/admin/tickets', { params });
 
+export const getAdminPayments = (params: AdminListFilters = {}) =>
+  apiClient.get('/admin/payments', { params });
 
-export const getAdminFleet = () =>
-  apiClient.get('/admin/fleet');
+export const closeFailedAdminPayment = (id: number) =>
+  apiClient.patch(`/admin/payments/${id}/close`);
+
+export const getAdminPayouts = (params: AdminListFilters = {}) =>
+  apiClient.get('/admin/payouts', { params });
+
+export const createAdminPartnerPayout = (
+  partnerId: number,
+  data: { referenceCode: string },
+) => apiClient.post(`/admin/partners/${partnerId}/payouts`, data);
+
+export const getAdminFinancialActivity = (params: AdminListFilters = {}) =>
+  apiClient.get('/admin/financial-activity', { params });
+
 
 export const getChatPartners = () =>
   apiClient.get('/communications/partners');

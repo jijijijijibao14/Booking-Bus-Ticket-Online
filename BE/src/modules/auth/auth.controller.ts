@@ -48,6 +48,16 @@ export class AuthController {
         return;
       }
 
+      if (user.status === 'Suspended' || user.status === 'Deleted') {
+        res.status(403).json({
+          success: false,
+          message: user.status === 'Suspended'
+            ? 'Tài khoản của bạn đã bị khóa. Vui lòng liên hệ quản trị viên.'
+            : 'Tài khoản của bạn đã được lưu trữ.',
+        });
+        return;
+      }
+
       const token = jwt.sign(
         { user_id: user.user_id, email: user.email, role: user.role },
         JWT_SECRET,
@@ -104,6 +114,16 @@ export class AuthController {
 
       // Đã sửa thành authService (bỏ this.) để khớp với cấu trúc import đầu file của bạn
       const result = await authService.loginWithGoogle(token);
+
+      if (result.user.status === 'Suspended' || result.user.status === 'Deleted') {
+        res.status(403).json({
+          success: false,
+          message: result.user.status === 'Suspended'
+            ? 'Tài khoản của bạn đã bị khóa. Vui lòng liên hệ quản trị viên.'
+            : 'Tài khoản của bạn đã được lưu trữ.',
+        });
+        return;
+      }
       
       res.status(200).json({
         success: true,
@@ -145,7 +165,10 @@ export class AuthController {
       }
 
       await authService.forgotPassword(email);
-      res.status(200).json({ success: true, message: 'Email hướng dẫn khôi phục mật khẩu đã được gửi.' });
+      res.status(200).json({
+        success: true,
+        message: 'Mã OTP khôi phục mật khẩu đã được gửi đến email và có hiệu lực trong 5 phút.',
+      });
     } catch (error: any) {
       res.status(400).json({ success: false, message: error.message });
     }
@@ -153,13 +176,20 @@ export class AuthController {
 
   resetPassword = async (req: Request, res: Response): Promise<void> => {
     try {
-      const { token, newPassword } = req.body;
-      if (!token || !newPassword) {
-        res.status(400).json({ success: false, message: 'Token và mật khẩu mới là bắt buộc.' });
+      const { token, email, otp, newPassword } = req.body;
+      if (!newPassword || (!token && (!email || !otp))) {
+        res.status(400).json({
+          success: false,
+          message: 'Email, mã OTP và mật khẩu mới là bắt buộc.',
+        });
         return;
       }
 
-      await authService.resetPassword(token, newPassword);
+      if (token) {
+        await authService.resetPassword(token, newPassword);
+      } else {
+        await authService.resetPasswordWithOtp(email, otp, newPassword);
+      }
       res.status(200).json({ success: true, message: 'Đặt lại mật khẩu thành công. Bạn có thể đăng nhập.' });
     } catch (error: any) {
       res.status(400).json({ success: false, message: error.message });

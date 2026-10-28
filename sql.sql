@@ -33,7 +33,7 @@ CREATE TABLE users (
     role ENUM('Customer', 'Partner', 'Admin') NOT NULL DEFAULT 'Customer',
     admin_account_guard TINYINT
         GENERATED ALWAYS AS (CASE WHEN role = 'Admin' THEN 1 ELSE NULL END) STORED,
-    status ENUM('Pending Approval', 'Active', 'Rejected') NOT NULL DEFAULT 'Active',
+    status ENUM('Pending Approval', 'Active', 'Rejected', 'Suspended', 'Deleted') NOT NULL DEFAULT 'Active',
     wallet_balance DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -58,6 +58,82 @@ CREATE TABLE partner_profiles (
         FOREIGN KEY (partner_id) REFERENCES users(user_id) ON DELETE CASCADE,
     CONSTRAINT chk_partner_commission_rate CHECK (commission_rate BETWEEN 0 AND 100),
     CONSTRAINT chk_partner_withdrawable_balance CHECK (withdrawable_balance >= 0)
+) ENGINE=InnoDB;
+
+CREATE TABLE partner_payment_accounts (
+    partner_id INT NOT NULL,
+    bank_name VARCHAR(100) NOT NULL,
+    bank_account_name VARCHAR(150) NOT NULL,
+    bank_account_number VARCHAR(50) NOT NULL,
+    branch_name VARCHAR(150) NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (partner_id),
+    CONSTRAINT fk_partner_payment_accounts_partner
+        FOREIGN KEY (partner_id) REFERENCES partner_profiles(partner_id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE system_financial_accounts (
+    account_code VARCHAR(30) NOT NULL,
+    opening_balance DECIMAL(14, 2) NOT NULL DEFAULT 0.00,
+    current_balance DECIMAL(14, 2) NOT NULL DEFAULT 0.00,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (account_code),
+    CONSTRAINT chk_system_financial_account_code
+        CHECK (account_code IN ('SYSTEM_WALLET', 'COMMISSION_WALLET')),
+    CONSTRAINT chk_system_financial_opening_balance CHECK (opening_balance >= 0),
+    CONSTRAINT chk_system_financial_current_balance CHECK (current_balance >= 0)
+) ENGINE=InnoDB;
+
+CREATE TABLE system_commission_settings (
+    setting_id TINYINT NOT NULL DEFAULT 1,
+    commission_rate DECIMAL(5, 2) NOT NULL DEFAULT 10.00,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (setting_id),
+    CONSTRAINT chk_system_commission_settings_singleton CHECK (setting_id = 1),
+    CONSTRAINT chk_system_commission_rate CHECK (commission_rate BETWEEN 0 AND 100)
+) ENGINE=InnoDB;
+
+INSERT INTO system_commission_settings (setting_id, commission_rate)
+VALUES (1, 10.00);
+
+INSERT INTO system_financial_accounts (account_code, opening_balance)
+VALUES ('SYSTEM_WALLET', 0.00), ('COMMISSION_WALLET', 0.00);
+
+CREATE TABLE system_financial_transactions (
+    transaction_id BIGINT NOT NULL AUTO_INCREMENT,
+    account_code VARCHAR(30) NOT NULL,
+    admin_user_id INT NULL,
+    transaction_type ENUM('PAYMENT', 'REFUND', 'COMMISSION', 'ADJUSTMENT', 'PARTNER_PAYOUT') NOT NULL,
+    amount DECIMAL(14, 2) NOT NULL COMMENT 'Số có dấu: tiền vào dương, tiền ra âm',
+    reference_code VARCHAR(100) NULL,
+    description VARCHAR(500) NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (transaction_id),
+    KEY idx_system_financial_transactions_account_created (account_code, created_at),
+    KEY idx_system_financial_transactions_reference (reference_code),
+    CONSTRAINT fk_system_financial_transactions_account
+        FOREIGN KEY (account_code) REFERENCES system_financial_accounts(account_code) ON DELETE RESTRICT,
+    CONSTRAINT fk_system_financial_transactions_admin
+        FOREIGN KEY (admin_user_id) REFERENCES users(user_id) ON DELETE SET NULL,
+    CONSTRAINT chk_system_financial_transaction_amount CHECK (amount <> 0)
+) ENGINE=InnoDB;
+
+CREATE TABLE partner_payouts (
+    payout_id INT NOT NULL AUTO_INCREMENT,
+    partner_id INT NOT NULL,
+    admin_user_id INT NOT NULL,
+    amount DECIMAL(12, 2) NOT NULL,
+    status ENUM('Paid') NOT NULL DEFAULT 'Paid',
+    reference_code VARCHAR(100) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (payout_id),
+    UNIQUE KEY uq_partner_payout_reference (reference_code),
+    KEY idx_partner_payouts_partner_created (partner_id, created_at),
+    CONSTRAINT fk_partner_payouts_partner
+        FOREIGN KEY (partner_id) REFERENCES partner_profiles(partner_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_partner_payouts_admin
+        FOREIGN KEY (admin_user_id) REFERENCES users(user_id) ON DELETE RESTRICT,
+    CONSTRAINT chk_partner_payouts_amount CHECK (amount > 0)
 ) ENGINE=InnoDB;
 
 -- =============================================================================
@@ -175,6 +251,7 @@ CREATE TABLE trips (
     driver_id INT NULL,
     departure_time DATETIME NOT NULL,
     arrival_time DATETIME NOT NULL,
+    completed_at DATETIME NULL,
     estimated_duration_minutes INT NULL,
     actual_departure_time DATETIME NULL,
     actual_arrival_time DATETIME NULL,
@@ -273,7 +350,7 @@ CREATE TABLE wallet_transactions (
     user_id INT NOT NULL,
     booking_id INT NULL,
     related_booking_id INT NULL,
-    transaction_type ENUM('PAYMENT', 'REFUND', 'ADJUSTMENT') NOT NULL,
+    transaction_type ENUM('PAYMENT', 'REFUND', 'ADJUSTMENT', 'PARTNER_PAYOUT') NOT NULL,
     amount DECIMAL(12, 2) NOT NULL COMMENT 'Số có dấu: thanh toán âm, hoàn tiền dương',
     balance_before DECIMAL(12, 2) NOT NULL,
     balance_after DECIMAL(12, 2) NOT NULL,
@@ -315,6 +392,27 @@ CREATE TABLE refund_requests (
     CONSTRAINT fk_refund_requests_partner
         FOREIGN KEY (partner_id) REFERENCES partner_profiles(partner_id) ON DELETE SET NULL,
     CONSTRAINT chk_refund_requests_amount CHECK (refund_amount >= 0)
+) ENGINE=InnoDB;
+
+CREATE TABLE partner_trip_settlements (
+    trip_id INT NOT NULL,
+    partner_id INT NOT NULL,
+    gross_amount DECIMAL(14, 2) NOT NULL,
+    commission_rate DECIMAL(5, 2) NOT NULL,
+    commission_amount DECIMAL(14, 2) NOT NULL,
+    partner_amount DECIMAL(14, 2) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (trip_id),
+    KEY idx_partner_trip_settlements_partner_created (partner_id, created_at),
+    CONSTRAINT fk_partner_trip_settlements_trip
+        FOREIGN KEY (trip_id) REFERENCES trips(trip_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_partner_trip_settlements_partner
+        FOREIGN KEY (partner_id) REFERENCES partner_profiles(partner_id) ON DELETE RESTRICT,
+    CONSTRAINT chk_partner_trip_settlement_commission_rate CHECK (commission_rate BETWEEN 0 AND 100),
+    CONSTRAINT chk_partner_trip_settlement_amounts CHECK (
+        gross_amount >= 0 AND commission_amount >= 0 AND partner_amount >= 0
+        AND ROUND(commission_amount + partner_amount, 2) = gross_amount
+    )
 ) ENGINE=InnoDB;
 
 CREATE TABLE feedbacks (

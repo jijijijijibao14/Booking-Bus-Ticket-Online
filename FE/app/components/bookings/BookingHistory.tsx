@@ -65,7 +65,7 @@ export default function BookingHistory() {
   const getStatusDisplay = (booking: any) => {
     const { display_status, created_at } = booking;
     const firstTicket = booking.tickets?.[0];
-    const isPast = firstTicket && new Date(firstTicket.departure_time) < new Date();
+    const isPast = firstTicket && new Date(firstTicket.arrival_time) < new Date();
 
     const PAYMENT_WINDOW_MS = 10 * 60 * 1000;
     const isExpiredPending = display_status === 'PaymentPending' && (new Date().getTime() - new Date(created_at).getTime() > PAYMENT_WINDOW_MS);
@@ -161,7 +161,7 @@ export default function BookingHistory() {
     const firstTicket = booking.tickets?.[0];
     if (!firstTicket) return false;
 
-    const isPastTrip = new Date(firstTicket.departure_time) < new Date();
+    const isPastTrip = new Date(firstTicket.arrival_time) < new Date();
     
     const PAYMENT_WINDOW_MS = 10 * 60 * 1000; 
     const isExpiredPending = display_status === 'PaymentPending' && (new Date().getTime() - new Date(created_at).getTime() > PAYMENT_WINDOW_MS);

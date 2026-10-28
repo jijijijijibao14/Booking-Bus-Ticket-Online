@@ -12,7 +12,7 @@ import LoginPage from './components/LoginPage';
 import RegisterPage from './components/RegisterPage';
 import MerchantDashboard from './components/Merchant/MerchantDashboard';
 import MerchantInfo from './components/Merchant/MerchantProfile';
-import AdminPortal from './components/AdminPortal';
+import Admin from './components/admin/Admin';
 import CustomerProfile from './components/CustomerProfile';
 import NotFoundPage from './components/NotFoundPage';
 
@@ -76,7 +76,7 @@ const router = createBrowserRouter([
       },
       {
         path: '/admin',
-        element: <AdminPortal />,
+        element: <Admin />,
       },
       {
         path: '/profile',

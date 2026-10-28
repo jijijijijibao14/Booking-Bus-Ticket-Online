@@ -944,27 +944,21 @@ export default function BusBooking() {
                             <Bus className="w-16 h-16 text-muted-foreground/20 mx-auto mb-4" />
 
                             <h3 className="text-xl font-semibold text-foreground mb-2">
-                              Không tìm
-                              thấy chuyến
-                              đi
+                              {bookingStep === 'return'
+                                ? 'Không tìm thấy chuyến về'
+                                : 'Không tìm thấy chuyến đi'}
                             </h3>
 
                             <p className="text-muted-foreground mb-6">
-                              Rất tiếc,
-                              hiện tại
-                              không có
-                              chuyến xe
-                              nào phù hợp
-                              với yêu cầu
-                              từ{' '}
-                              {
-                                searchData.from
-                              }{' '}
+                              Rất tiếc, hiện tại không có chuyến xe nào phù hợp
+                              với yêu cầu từ{' '}
+                              {bookingStep === 'return'
+                                ? searchData.to
+                                : searchData.from}{' '}
                               đến{' '}
-                              {
-                                searchData.to
-                              }
-                              .
+                              {bookingStep === 'return'
+                                ? searchData.from
+                                : searchData.to}.
                             </p>
 
                             <button

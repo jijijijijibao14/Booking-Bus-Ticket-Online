@@ -1,7 +1,7 @@
 import { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import pool from '../../config/database.js';
 
-type UserRole = 'Customer' | 'Partner' | 'Admin';
+type UserRole = 'Customer' | 'Partner';
 type ConversationType = 'CUSTOMER_PARTNER' | 'CUSTOMER_SUPPORT' | 'PARTNER_SUPPORT';
 
 interface ConversationRow extends RowDataPacket {
@@ -30,11 +30,9 @@ class CommunicationsService {
     if (role === 'Customer') {
       whereClause = 'c.customer_id = ?';
       params = [userId];
-    } else if (role === 'Partner') {
+    } else {
       whereClause = 'c.partner_id = ?';
       params = [userId];
-    } else {
-      whereClause = "c.conversation_type IN ('CUSTOMER_SUPPORT', 'PARTNER_SUPPORT')";
     }
 
     const [rows] = await pool.query(
@@ -112,12 +110,10 @@ class CommunicationsService {
     userId: number,
     role: UserRole,
   ) {
-    const conditions = role === 'Admin'
-      ? `conversation_type IN ('CUSTOMER_SUPPORT', 'PARTNER_SUPPORT')`
-      : role === 'Partner'
-        ? 'partner_id = ?'
-        : 'customer_id = ?';
-    const params = role === 'Admin' ? [conversationId] : [conversationId, userId];
+    const conditions = role === 'Partner'
+      ? 'partner_id = ?'
+      : 'customer_id = ?';
+    const params = [conversationId, userId];
     const [rows] = await pool.query<AccessRow[]>(
       `SELECT conversation_id
        FROM chat_conversations

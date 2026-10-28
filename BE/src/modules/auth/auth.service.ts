@@ -1,34 +1,41 @@
 import crypto from 'crypto';
-import nodemailer from 'nodemailer';
 // thêm 2 import này để gửi mail
 import { OAuth2Client } from 'google-auth-library';
 import jwt from 'jsonwebtoken';
 import pool from '../../config/database.js';
 import redisClient from '../../config/redis.js';
+import { sendGmailEmail } from '../../utils/gmail.util.js';
 import { hashPassword, verifyPassword } from './password.util.js';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-
-if (!GOOGLE_CLIENT_ID) {
-  throw new Error('Thiếu GOOGLE_CLIENT_ID trong file .env của backend!');
-}
-
-const client = new OAuth2Client(GOOGLE_CLIENT_ID);
+const client = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
 const JWT_SECRET = process.env.JWT_SECRET || 'vietgo_secret_key_2026';
 const REGISTRATION_OTP_TTL_SECONDS = 120;
 const REGISTRATION_OTP_MAX_ATTEMPTS = 5;
 const REGISTRATION_OTP_RESEND_COOLDOWN_SECONDS = 30;
+const PASSWORD_RESET_OTP_TTL_SECONDS = 300;
+const PASSWORD_RESET_OTP_MAX_ATTEMPTS = 5;
+const PASSWORD_RESET_OTP_RESEND_COOLDOWN_SECONDS = 30;
 
 const registrationOtpKey = (email: string) =>
   `auth:registration-otp:${encodeURIComponent(email.toLowerCase())}`;
 
 const registrationOtpCooldownKey = (email: string) =>
   `auth:registration-otp-cooldown:${encodeURIComponent(email.toLowerCase())}`;
+const passwordResetOtpKey = (email: string) =>
+  `auth:password-reset-otp:${encodeURIComponent(email.toLowerCase())}`;
+const passwordResetOtpCooldownKey = (email: string) =>
+  `auth:password-reset-otp-cooldown:${encodeURIComponent(email.toLowerCase())}`;
+
   class AuthService {
   
   // 1. Hàm đăng nhập bằng Google hoàn chỉnh
   
 async loginWithGoogle(token: string) {
   try {
+    if (!client || !GOOGLE_CLIENT_ID) {
+      throw new Error('Đăng nhập Google chưa được cấu hình. Thiếu GOOGLE_CLIENT_ID trong file .env của backend.');
+    }
+
     // 1. Xác thực ID token do Google gửi lên
     const ticket = await client.verifyIdToken({
       idToken: token,
@@ -215,17 +222,8 @@ async loginWithGoogle(token: string) {
       REGISTRATION_OTP_TTL_SECONDS
     );
 
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS,
-      },
-    });
-
     try {
-      await transporter.sendMail({
-        from: `"VIETGO" <${process.env.EMAIL_USER}>`,
+      await sendGmailEmail({
         to: registration.email,
         subject: 'Mã xác minh đăng ký VIETGO',
         text: `Mã OTP đăng ký tài khoản VIETGO của bạn là ${otp}. Mã có hiệu lực trong 2 phút.`,
@@ -238,9 +236,23 @@ async loginWithGoogle(token: string) {
         'EX',
         REGISTRATION_OTP_RESEND_COOLDOWN_SECONDS
       );
-    } catch {
+    } catch (error) {
       await redisClient.del(otpKey);
-      throw new Error('Không gửi được email OTP. Vui lòng thử lại sau.');
+      const mailError = error instanceof Error
+        ? error as Error & {
+            code?: string | number;
+            responseCode?: number;
+            status?: number;
+          }
+        : undefined;
+      console.error('Registration OTP email delivery failed:', {
+        message: mailError?.message || String(error),
+        code: mailError?.code,
+        status: mailError?.status ?? mailError?.responseCode,
+      });
+      throw new Error(
+        'Không gửi được email OTP. Hãy kiểm tra log backend để biết lỗi Gmail cụ thể.'
+      );
     }
 
     return true;
@@ -368,52 +380,143 @@ async loginWithGoogle(token: string) {
     return true;
   }
 
-  // --- 2. QUÊN MẬT KHẨU (Gửi Email Link) ---
+  // --- 2. QUÊN MẬT KHẨU (Gửi OTP qua email) ---
   async forgotPassword(email: string) {
-    const [users]: any = await pool.query('SELECT user_id FROM users WHERE email = ?', [email]);
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      throw new Error('Email không hợp lệ.');
+    }
+
+    const [users]: any = await pool.query(
+      'SELECT user_id FROM users WHERE email = ?',
+      [normalizedEmail],
+    );
     if (users.length === 0) throw new Error('Email không tồn tại trong hệ thống.');
 
-    // Tạo token ngẫu nhiên và thời hạn 15 phút
-    const resetToken = crypto.randomBytes(32).toString('hex');
-    const expireTime = Date.now() + 15 * 60 * 1000; 
-// const expireTime = Date.now() + 15 * 1000; 
-    // Lưu token vào DB
-    await pool.query(
-      'UPDATE users SET reset_token = ?, reset_token_expire = ? WHERE email = ?',
-      [resetToken, expireTime, email]
+    const cooldownKey = passwordResetOtpCooldownKey(normalizedEmail);
+    const cooldownSeconds = await redisClient.ttl(cooldownKey);
+    if (cooldownSeconds > 0) {
+      throw new Error(`Vui lòng đợi ${cooldownSeconds} giây trước khi gửi mã mới.`);
+    }
+
+    const otp = crypto.randomInt(0, 1_000_000).toString().padStart(6, '0');
+    const salt = crypto.randomBytes(16).toString('hex');
+    const otpHash = crypto.createHash('sha256').update(`${salt}:${otp}`).digest('hex');
+    const otpKey = passwordResetOtpKey(normalizedEmail);
+
+    await redisClient.set(
+      otpKey,
+      JSON.stringify({ otpHash, salt, attempts: 0 }),
+      'EX',
+      PASSWORD_RESET_OTP_TTL_SECONDS,
     );
 
-    // Cấu hình gửi Email 
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.EMAIL_USER, 
-        pass: process.env.EMAIL_PASS  
+    try {
+      await sendGmailEmail({
+        to: normalizedEmail,
+        subject: 'Mã OTP khôi phục mật khẩu VIETGO',
+        text: `Mã OTP khôi phục mật khẩu VIETGO của bạn là ${otp}. Mã có hiệu lực trong 5 phút.`,
+        html: `<div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:8px"><h2 style="color:#173b7a">Khôi phục mật khẩu VIETGO</h2><p>Nhập mã dưới đây để đặt mật khẩu mới. Mã chỉ có hiệu lực trong <b>5 phút</b>.</p><div style="font-size:32px;font-weight:700;letter-spacing:8px;padding:16px 0">${otp}</div><p>Nếu bạn không yêu cầu khôi phục mật khẩu, hãy bỏ qua email này.</p></div>`,
+      });
+
+      await redisClient.set(
+        cooldownKey,
+        '1',
+        'EX',
+        PASSWORD_RESET_OTP_RESEND_COOLDOWN_SECONDS,
+      );
+    } catch (error) {
+      await redisClient.del(otpKey);
+      const mailError = error instanceof Error
+        ? error as Error & {
+            code?: string | number;
+            responseCode?: number;
+            status?: number;
+          }
+        : undefined;
+      console.error('Password reset OTP email delivery failed:', {
+        message: mailError?.message || String(error),
+        code: mailError?.code,
+        status: mailError?.status ?? mailError?.responseCode,
+      });
+      throw new Error(
+        'Không gửi được email OTP. Hãy kiểm tra log backend để biết lỗi Gmail cụ thể.',
+      );
+    }
+
+    return true;
+  }
+
+  async resetPasswordWithOtp(email: string, otp: string, newPass: string) {
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const submittedOtp = String(otp || '').trim();
+    const passwordStrengthRegex = /^(?=.*[A-Z])(?=.*[!@#$%^&*(),.?":{}|<>]).{6,}$/;
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      throw new Error('Email không hợp lệ.');
+    }
+    if (!/^\d{6}$/.test(submittedOtp)) {
+      throw new Error('Vui lòng nhập mã OTP gồm 6 chữ số.');
+    }
+    if (typeof newPass !== 'string' || !passwordStrengthRegex.test(newPass)) {
+      throw new Error(
+        'Mật khẩu chưa đủ mạnh! Yêu cầu: Tối thiểu 6 ký tự, có ít nhất 1 chữ cái viết hoa và 1 ký tự đặc biệt.',
+      );
+    }
+
+    const otpKey = passwordResetOtpKey(normalizedEmail);
+    const storedOtp = await redisClient.get(otpKey);
+    if (!storedOtp) {
+      throw new Error('Mã OTP đã hết hạn. Vui lòng yêu cầu gửi mã mới.');
+    }
+
+    const otpRecord = JSON.parse(storedOtp) as {
+      otpHash: string;
+      salt: string;
+      attempts: number;
+    };
+    const submittedHash = crypto
+      .createHash('sha256')
+      .update(`${otpRecord.salt}:${submittedOtp}`)
+      .digest();
+    const expectedHash = Buffer.from(otpRecord.otpHash, 'hex');
+    const isValid = expectedHash.length === submittedHash.length &&
+      crypto.timingSafeEqual(expectedHash, submittedHash);
+
+    if (!isValid) {
+      const attempts = otpRecord.attempts + 1;
+      if (attempts >= PASSWORD_RESET_OTP_MAX_ATTEMPTS) {
+        await redisClient.del(otpKey);
+        throw new Error('Mã OTP không đúng. Bạn đã nhập sai 5 lần, vui lòng yêu cầu mã mới.');
       }
-    });
 
-    const resetUrl = `http://localhost:5173/reset-password?token=${resetToken}`;
-    
-    // Giao diện Email 
-    const mailContent = `
-      <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
-        <h2 style="color: #1e3a8a; text-align: center;">Khôi Phục Mật Khẩu - VIETGO</h2>
-        <p>Chào bạn,</p>
-        <p>Hệ thống nhận được yêu cầu đặt lại mật khẩu cho tài khoản của bạn. Vui lòng bấm vào nút bên dưới để tiến hành đổi mật khẩu mới:</p>
-        <div style="text-align: center; margin: 30px 0;">
-          <a href="${resetUrl}" style="background-color: #ea580c; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px;">Đổi Mật Khẩu Ngay</a>
-        </div>
-        <p style="color: #6b7280; font-size: 13px;">Đường liên kết này có hiệu lực trong vòng <b>15 phút</b>. Nếu bạn không yêu cầu đổi mật khẩu, vui lòng bỏ qua email này.</p>
-      </div>
-    `;
+      const remainingSeconds = await redisClient.ttl(otpKey);
+      if (remainingSeconds <= 0) {
+        await redisClient.del(otpKey);
+        throw new Error('Mã OTP đã hết hạn. Vui lòng yêu cầu gửi mã mới.');
+      }
 
-    await transporter.sendMail({
-      from: '"VIETGO Hệ Thống" <no-reply@vietgo.com>',
-      to: email,
-      subject: 'Yêu cầu đặt lại mật khẩu - VIETGO',
-      html: mailContent
-    });
+      await redisClient.set(
+        otpKey,
+        JSON.stringify({ ...otpRecord, attempts }),
+        'EX',
+        remainingSeconds,
+      );
+      throw new Error('Mã OTP không đúng. Vui lòng kiểm tra email và nhập lại.');
+    }
 
+    const passwordHash = await hashPassword(newPass);
+    const [result]: any = await pool.query(
+      `UPDATE users
+       SET password_hash = ?, reset_token = NULL, reset_token_expire = NULL
+       WHERE email = ?`,
+      [passwordHash, normalizedEmail],
+    );
+    if (result.affectedRows === 0) {
+      throw new Error('Không tìm thấy tài khoản.');
+    }
+
+    await redisClient.del(otpKey, passwordResetOtpCooldownKey(normalizedEmail));
     return true;
   }
 

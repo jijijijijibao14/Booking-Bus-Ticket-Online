@@ -33,6 +33,22 @@
   The command refuses to create another admin. Never put the admin password in SQL
   files or commit it to the repository.
 
+  If the admin account exists but its password is unknown, reset it without
+  changing any other account. From the project root in PowerShell:
+
+  ```powershell
+  $env:ADMIN_EMAIL = "admin@vietgo.vn"
+  $securePassword = Read-Host "New admin password (12+ characters)" -AsSecureString
+  $env:ADMIN_PASSWORD = [System.Net.NetworkCredential]::new("", $securePassword).Password
+  npm run reset-admin-password --prefix .\BE
+  Remove-Item Env:ADMIN_EMAIL, Env:ADMIN_PASSWORD
+  Remove-Variable securePassword
+  ```
+
+  The script updates only the Admin account matching `ADMIN_EMAIL` in the database
+  configured for the backend. It does not create a new user or modify other
+  accounts.
+
   To create exactly three partner accounts, use PowerShell from the project root.
   Password prompts are hidden; each password must have at least 12 characters.
   The backend hashes them with scrypt before inserting the accounts and partner

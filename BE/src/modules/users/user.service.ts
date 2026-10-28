@@ -80,6 +80,8 @@ class UserService {
             ? 'Hoàn tiền vào Ví ViệtGo'
             : row.transaction_type === 'PAYMENT'
               ? 'Thanh toán bằng Ví ViệtGo'
+              : row.transaction_type === 'PARTNER_PAYOUT'
+                ? 'Chi trả đối tác từ Ví hệ thống VIETGO'
               : 'Điều chỉnh số dư Ví ViệtGo'
         ),
       date: row.created_at,

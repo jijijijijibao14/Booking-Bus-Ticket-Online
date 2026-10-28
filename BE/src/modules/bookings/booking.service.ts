@@ -2,6 +2,7 @@ import redisClient from '../../config/redis.js';
 import pool from '../../config/database.js';
 import { generateQRCode } from '../../utils/qrcode.util.js';
 import { CustomError } from '../../utils/customError.js';
+import { recordSystemFinancialTransaction } from '../../utils/system-financial.util.js';
 import { PoolConnection, RowDataPacket } from 'mysql2/promise';
 
 const LOCK_EXPIRE_MS = 10 * 60 * 1000; // Khóa ghế trong 10 phút
@@ -575,6 +576,13 @@ export class BookingService {
               `Thanh toán vé ${result.bookingCode} bằng Ví ViệtGo`,
           },
         );
+        await recordSystemFinancialTransaction(connection, {
+          accountCode: 'SYSTEM_WALLET',
+          transactionType: 'PAYMENT',
+          amount: Number(payload.totalAmount),
+          referenceCode: result.bookingCode,
+          description: `Thanh toán booking ${result.bookingCode}`,
+        });
       }
 
       await connection.commit();
@@ -693,6 +701,18 @@ export class BookingService {
               `Thanh toán vé khứ hồi ${departResult.bookingCode} / ${returnResult.bookingCode} bằng Ví ViệtGo`,
           },
         );
+        for (const [booking, amount] of [
+          [departResult, departurePayload.totalAmount],
+          [returnResult, returnPayload.totalAmount],
+        ] as const) {
+          await recordSystemFinancialTransaction(connection, {
+            accountCode: 'SYSTEM_WALLET',
+            transactionType: 'PAYMENT',
+            amount: Number(amount),
+            referenceCode: booking.bookingCode,
+            description: `Thanh toán booking ${booking.bookingCode}`,
+          });
+        }
       }
 
       // Chỉ commit khi CẢ HAI chiều đều thành công.

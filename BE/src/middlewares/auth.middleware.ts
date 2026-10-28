@@ -1,36 +1,56 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import pool from '../config/database.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'vietgo_secret_key_2026';
 
-export const verifyToken = (req: Request, res: Response, next: NextFunction): void => {
-  // FE sẽ gửi token qua header: Authorization: Bearer <token>
+export const verifyToken = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
   const authHeader = req.headers.authorization;
-  
+
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    // console.warn(`[Auth] Missing or malformed Authorization header on ${req.method} ${req.url}`);
     res.status(403).json({ success: false, message: 'Vui lòng đăng nhập để thực hiện chức năng này.' });
     return;
   }
 
-  const token = authHeader.split(' ')[1];
+  let decoded: any;
+  try {
+    decoded = jwt.verify(authHeader.slice(7), JWT_SECRET);
+  } catch {
+    res.status(401).json({ success: false, message: 'Token không hợp lệ hoặc đã hết hạn.' });
+    return;
+  }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    (req as any).user = decoded; // Lưu thông tin user vào request (chứa user_id)
-    // console.log('[Auth] Decoded user payload:', decoded);
+    const userId = Number(decoded?.user_id);
+    if (!Number.isSafeInteger(userId) || userId <= 0) {
+      res.status(401).json({ success: false, message: 'Token không chứa tài khoản hợp lệ.' });
+      return;
+    }
+
+    const [rows]: any = await pool.query(
+      'SELECT role, status FROM users WHERE user_id = ? LIMIT 1',
+      [userId],
+    );
+    if (rows.length === 0 || ['Suspended', 'Deleted', 'Rejected'].includes(rows[0].status)) {
+      res.status(403).json({ success: false, message: 'Tài khoản đã bị khóa hoặc không còn quyền truy cập.' });
+      return;
+    }
+
+    (req as any).user = { ...decoded, role: rows[0].role };
     next();
   } catch (error) {
-    // console.warn('[Auth] Token verification failed:', error);
-    res.status(401).json({ success: false, message: 'Token không hợp lệ hoặc đã hết hạn.' });
+    next(error);
   }
 };
 
-// Middleware kiểm tra Quyền (Role) - Phục vụ RBAC
 export const verifyRole = (allowedRoles: string[]) => {
   return (req: Request, res: Response, next: NextFunction): void => {
     const user = (req as any).user;
-    
+
     if (!user || !user.role) {
       res.status(403).json({ success: false, message: 'Không tìm thấy thông tin phân quyền.' });
       return;

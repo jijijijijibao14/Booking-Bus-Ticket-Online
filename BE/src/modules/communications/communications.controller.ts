@@ -1,14 +1,17 @@
 import { Request, Response } from 'express';
 import communicationsService from './communications.service.js';
 
-type UserRole = 'Customer' | 'Partner' | 'Admin';
+type UserRole = 'Customer' | 'Partner';
 
 function authUser(req: Request) {
-  const user = (req as Request & { user?: { user_id: number; role: UserRole } }).user;
-  if (!user?.user_id || !['Customer', 'Partner', 'Admin'].includes(user.role)) {
+  const user = (req as Request & { user?: { user_id: number; role: UserRole | 'Admin' } }).user;
+  if (!user || !user.user_id) {
     throw new Error('Thông tin xác thực không hợp lệ.');
   }
-  return user;
+  if (user.role !== 'Customer' && user.role !== 'Partner') {
+    throw new Error('Thông tin xác thực không hợp lệ.');
+  }
+  return { user_id: user.user_id, role: user.role };
 }
 
 class CommunicationsController {

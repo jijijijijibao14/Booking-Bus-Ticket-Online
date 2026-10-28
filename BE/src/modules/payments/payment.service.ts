@@ -4,6 +4,7 @@ import {
 } from 'mysql2';
 
 import pool from '../../config/database.js';
+import { recordSystemFinancialTransaction } from '../../utils/system-financial.util.js';
 
 import {
   buildVNPayPaymentUrl,
@@ -62,6 +63,7 @@ interface PaymentRow extends RowDataPacket {
 interface OrderBookingRow extends RowDataPacket {
   booking_id: number;
   booking_code: string;
+  total_amount: string | number;
   payment_status: BookingPaymentStatus;
 }
 
@@ -675,6 +677,7 @@ export class PaymentService {
                 SELECT
                   b.booking_id,
                   b.booking_code,
+                  b.total_amount,
                   b.payment_status
                 FROM payment_order_items poi
                 INNER JOIN bookings b
@@ -818,6 +821,7 @@ export class PaymentService {
               SELECT
                 b.booking_id,
                 b.booking_code,
+                b.total_amount,
                 b.payment_status
               FROM payment_order_items poi
               INNER JOIN bookings b
@@ -827,7 +831,6 @@ export class PaymentService {
             `,
             [payment.payment_order_id],
           );
-
         orderBookings = rows;
 
         if (orderBookings.length === 0) {
@@ -909,6 +912,15 @@ export class PaymentService {
           `,
           [payment.payment_order_id],
         );
+        for (const booking of orderBookings) {
+          await recordSystemFinancialTransaction(connection, {
+            accountCode: 'SYSTEM_WALLET',
+            transactionType: 'PAYMENT',
+            amount: Number(booking.total_amount),
+            referenceCode: booking.booking_code,
+            description: `Thanh toán booking ${booking.booking_code} qua VNPay`,
+          });
+        }
 
         /*
          * BƯỚC SAU:
@@ -928,6 +940,20 @@ export class PaymentService {
           `,
           [payment.booking_id],
         );
+        const [bookingRows]: any = await connection.query(
+          'SELECT booking_code, total_amount FROM bookings WHERE booking_id = ?',
+          [payment.booking_id],
+        );
+        if (bookingRows.length === 0) {
+          throw new Error('Không tìm thấy booking của giao dịch thanh toán.');
+        }
+        await recordSystemFinancialTransaction(connection, {
+          accountCode: 'SYSTEM_WALLET',
+          transactionType: 'PAYMENT',
+          amount: Number(bookingRows[0].total_amount),
+          referenceCode: bookingRows[0].booking_code,
+          description: `Thanh toán booking ${bookingRows[0].booking_code} qua VNPay`,
+        });
       } else {
         throw new Error(
           'Payment không liên kết với booking hoặc payment order.',
