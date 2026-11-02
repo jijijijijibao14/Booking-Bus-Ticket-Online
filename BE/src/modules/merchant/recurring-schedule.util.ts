@@ -3,6 +3,7 @@ export interface RecurringScheduleInput {
   arrivalLocation: string;
   vehicleId: number;
   driverId?: number | null;
+  secondaryDriverIds?: number[];
   startDate: string;
   endDate: string;
   weekdays: number[];
@@ -13,16 +14,18 @@ export interface RecurringScheduleInput {
   restDurationMinutes: number;
   bufferDurationMinutes: number;
   minimumTurnaroundMinutes: number;
-  transferDurationMinutes: number;
   idempotencyKey: string;
 }
 
 export interface ScheduledOccurrence {
   departureTime: string;
   arrivalTime: string;
+  departureLocation: string;
+  arrivalLocation: string;
+  direction: 'outbound' | 'return';
+  cycleStartTime: string;
   estimatedDurationMinutes: number;
   minimumTurnaroundMinutes: number;
-  transferDurationMinutes: number;
   conflicts: string[];
 }
 
@@ -30,12 +33,15 @@ interface TimedTrip {
   departureTime: string | Date;
   arrivalTime: string | Date;
   vehicleId: number;
-  driverId: number | null;
+  driverIds: number[];
   minimumTurnaroundMinutes: number;
   transferDurationMinutes: number;
   isCandidate: boolean;
   occurrenceIndex?: number;
 }
+
+const EARLIEST_DEPARTURE_MINUTES = 8 * 60;
+const LATEST_DEPARTURE_MINUTES = 20 * 60;
 
 function parseCivilDate(value: string, field: string): number {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
@@ -122,6 +128,23 @@ export function validateRecurringInput(input: RecurringScheduleInput): void {
   }
   assertInteger(input.vehicleId, 'Xe', 1, Number.MAX_SAFE_INTEGER);
   if (input.driverId != null) assertInteger(input.driverId, 'Tài xế', 1, Number.MAX_SAFE_INTEGER);
+  if (input.secondaryDriverIds !== undefined) {
+    if (!Array.isArray(input.secondaryDriverIds)) {
+      throw new Error('Danh sách tài xế phụ không hợp lệ.');
+    }
+    input.secondaryDriverIds.forEach((driverId) => assertInteger(
+      driverId,
+      'Tài xế phụ',
+      1,
+      Number.MAX_SAFE_INTEGER,
+    ));
+    if (new Set(input.secondaryDriverIds).size !== input.secondaryDriverIds.length) {
+      throw new Error('Tài xế phụ không được chọn trùng nhau.');
+    }
+    if (input.driverId != null && input.secondaryDriverIds.includes(input.driverId)) {
+      throw new Error('Tài xế chính không thể đồng thời là tài xế phụ.');
+    }
+  }
 
   const start = parseCivilDate(input.startDate, 'Ngày bắt đầu');
   const end = parseCivilDate(input.endDate, 'Ngày kết thúc');
@@ -146,7 +169,15 @@ export function validateRecurringInput(input: RecurringScheduleInput): void {
   ) {
     throw new Error('Mỗi ngày cần có từ 1 đến 8 giờ khởi hành.');
   }
-  input.departureTimes.forEach(parseWallTime);
+  input.departureTimes.forEach((time) => {
+    const departureMinutes = parseWallTime(time);
+    if (
+      departureMinutes < EARLIEST_DEPARTURE_MINUTES ||
+      departureMinutes > LATEST_DEPARTURE_MINUTES
+    ) {
+      throw new Error('Giờ khởi hành chỉ được trong khoảng từ 08:00 đến 20:00.');
+    }
+  });
   if (new Set(input.departureTimes).size !== input.departureTimes.length) {
     throw new Error('Giờ khởi hành không được trùng nhau.');
   }
@@ -159,7 +190,6 @@ export function validateRecurringInput(input: RecurringScheduleInput): void {
   assertInteger(input.restDurationMinutes, 'Thời gian nghỉ dọc đường', 0, 1440);
   assertInteger(input.bufferDurationMinutes, 'Thời gian dự phòng', 0, 1440);
   assertInteger(input.minimumTurnaroundMinutes, 'Thời gian nghỉ tối thiểu', 60, 1440);
-  assertInteger(input.transferDurationMinutes, 'Thời gian trung chuyển', 0, 1440);
   if (!input.idempotencyKey || input.idempotencyKey.length > 100) {
     throw new Error('Thiếu mã chống tạo trùng hoặc mã không hợp lệ.');
   }
@@ -183,26 +213,78 @@ export function createOccurrences(
     throw new Error('Tổng thời lượng chuyến không được vượt quá 48 giờ.');
   }
 
-  const occurrences: ScheduledOccurrence[] = [];
+  const starts: number[] = [];
   for (let date = start; date <= end; date += 86_400_000) {
     if (!weekdays.has(new Date(date).getUTCDay())) continue;
     for (const minuteOfDay of departureMinutes) {
-      const departure = date + minuteOfDay * 60_000;
+      starts.push(date + minuteOfDay * 60_000);
+    }
+  }
+  if (starts.length === 0) {
+    throw new Error('Không có ngày chạy nào khớp với khoảng ngày đã chọn.');
+  }
+
+  const occurrences: ScheduledOccurrence[] = [];
+  const scheduleEnd = end + 86_400_000 - 1;
+  const turnaroundMs = input.minimumTurnaroundMinutes * 60_000;
+  let direction: ScheduledOccurrence['direction'] = 'outbound';
+  for (let startIndex = 0; startIndex < starts.length; startIndex += 1) {
+    const nextScheduledStart = starts[startIndex + 1] ?? scheduleEnd + 1;
+    const cycleEnd = Math.min(scheduleEnd, nextScheduledStart - 1);
+    let departure = starts[startIndex];
+
+    while (departure <= cycleEnd) {
+      const departureDate = new Date(departure);
+      const departureMinutesOfDay = departureDate.getUTCHours() * 60 + departureDate.getUTCMinutes();
+      if (
+        departureMinutesOfDay < EARLIEST_DEPARTURE_MINUTES ||
+        departureMinutesOfDay > LATEST_DEPARTURE_MINUTES
+      ) {
+        break;
+      }
+      const departureLocation = direction === 'outbound'
+        ? input.departureLocation.trim()
+        : input.arrivalLocation.trim();
+      const arrivalLocation = direction === 'outbound'
+        ? input.arrivalLocation.trim()
+        : input.departureLocation.trim();
       occurrences.push({
         departureTime: formatDateTime(departure),
         arrivalTime: formatDateTime(departure + estimatedDurationMinutes * 60_000),
+        departureLocation,
+        arrivalLocation,
+        direction,
+        cycleStartTime: formatDateTime(starts[startIndex]),
         estimatedDurationMinutes,
         minimumTurnaroundMinutes: input.minimumTurnaroundMinutes,
-        transferDurationMinutes: input.transferDurationMinutes,
         conflicts: [],
       });
+      if (occurrences.length > 728) {
+        throw new Error('Lịch tạo vượt quá giới hạn 728 chuyến mỗi lần.');
+      }
+      departure += (estimatedDurationMinutes * 60_000) + turnaroundMs;
+      direction = direction === 'outbound' ? 'return' : 'outbound';
     }
   }
-  if (occurrences.length === 0) {
-    throw new Error('Không có ngày chạy nào khớp với khoảng ngày đã chọn.');
-  }
+
   if (occurrences.length > 728) {
     throw new Error('Lịch tạo vượt quá giới hạn 728 chuyến mỗi lần.');
+  }
+  return occurrences;
+}
+
+export function propagateCycleConflicts(
+  occurrences: ScheduledOccurrence[],
+): ScheduledOccurrence[] {
+  const blockedCycles = new Set<string>();
+  for (const occurrence of occurrences) {
+    if (blockedCycles.has(occurrence.cycleStartTime)) {
+      occurrence.conflicts.push('Không tạo chuyến vì chuyến trước trong chu kỳ đã bị bỏ qua.');
+    }
+    occurrence.conflicts = [...new Set(occurrence.conflicts)];
+    if (occurrence.conflicts.length > 0) {
+      blockedCycles.add(occurrence.cycleStartTime);
+    }
   }
   return occurrences;
 }
@@ -214,21 +296,43 @@ export function detectOccurrenceConflicts(
     arrivalTime: string | Date;
     vehicleId: number;
     driverId: number | null;
+    secondaryDriverIds?: number[] | string | null;
     minimumTurnaroundMinutes: number;
     transferDurationMinutes: number;
   }>,
   candidateVehicleId: number,
   candidateDriverId: number | null,
+  candidateSecondaryDriverIds: number[] = [],
 ): ScheduledOccurrence[] {
+  const parseDriverIds = (value: number[] | string | null | undefined) => {
+    if (Array.isArray(value)) return value;
+    if (!value) return [];
+    return value.split(',')
+      .map((id) => Number(id))
+      .filter((id) => Number.isSafeInteger(id) && id > 0);
+  };
+  const candidateDriverIds = [
+    ...(candidateDriverId == null ? [] : [candidateDriverId]),
+    ...candidateSecondaryDriverIds,
+  ];
   const timeline: TimedTrip[] = [
     ...existingTrips.map((trip) => ({
-      ...trip,
+      departureTime: trip.departureTime,
+      arrivalTime: trip.arrivalTime,
+      vehicleId: trip.vehicleId,
+      driverIds: [
+        ...(trip.driverId == null ? [] : [trip.driverId]),
+        ...parseDriverIds(trip.secondaryDriverIds),
+      ],
+      minimumTurnaroundMinutes: trip.minimumTurnaroundMinutes,
+      transferDurationMinutes: trip.transferDurationMinutes,
       isCandidate: false,
     })),
     ...occurrences.map((trip, occurrenceIndex) => ({
       ...trip,
       vehicleId: candidateVehicleId,
-      driverId: candidateDriverId,
+      driverIds: candidateDriverIds,
+      transferDurationMinutes: 0,
       isCandidate: true,
       occurrenceIndex,
     })),
@@ -246,7 +350,7 @@ export function detectOccurrenceConflicts(
       const secondArrival = parseDateTime(second.arrivalTime);
       const overlap = firstDeparture < secondArrival && firstArrival > secondDeparture;
       const sameVehicle = first.vehicleId === second.vehicleId;
-      const sameDriver = first.driverId != null && first.driverId === second.driverId;
+      const sameDriver = first.driverIds.some((driverId) => second.driverIds.includes(driverId));
       const reasons: string[] = [];
 
       if (sameVehicle && overlap) {
@@ -275,7 +379,7 @@ export function detectOccurrenceConflicts(
       current.minimumTurnaroundMinutes,
     ) + current.transferDurationMinutes;
     if (availableMinutes >= requiredMinutes) continue;
-    const reason = `Xe cần nghỉ/trung chuyển thêm ${Math.ceil(requiredMinutes - availableMinutes)} phút.`;
+    const reason = `Xe cần nghỉ thêm ${Math.ceil(requiredMinutes - availableMinutes)} phút giữa hai chuyến.`;
     if (previous.isCandidate) occurrences[previous.occurrenceIndex!].conflicts.push(reason);
     if (current.isCandidate) occurrences[current.occurrenceIndex!].conflicts.push(reason);
   }

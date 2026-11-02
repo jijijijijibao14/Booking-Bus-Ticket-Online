@@ -65,8 +65,13 @@
   All three records are rolled back if any insert fails. They start as
   `Pending Approval`; no existing accounts are modified.
 
-  The full `sql v2.sql` script drops and recreates the `booking` database; back up
-  any existing data before running it. Do not use it as an in-place migration.
+  The root `sql.sql` file is the complete schema for a new database. It includes
+  recurring-trip tables and the normalized unique phone/vehicle-plate fields.
+  Its table creation statements are not an in-place upgrade; use the migrations
+  below for an existing database.
+  For an existing database, `BE\src\scripts\admin-operations-migration.sql`
+  applies the admin and financial schema changes and backfills existing data
+  without recreating the database.
 
   For an existing `booking` database, back it up and run
   `BE\migrations\20261019_add_feedback_and_chat.sql` once in a MySQL client before
@@ -78,13 +83,37 @@
 
   For an existing MySQL `booking` database, back it up and run
   `BE\database\migrations\20261023_recurring_trip_schedules.sql` once before
-  using recurring trip creation. Do not run the root `sql.sql` installation
-  script against a database that contains data; it drops and recreates `booking`.
+  using recurring trip creation. This migration is only needed for databases
+  not created from the current root `sql.sql`.
+
+  For an existing database, run
+  `BE\database\migrations\20261029_add_secondary_trip_drivers.sql` once after
+  the recurring-trip migration to add support for multiple secondary drivers
+  on recurring schedule templates and trips. The primary driver remains in
+  the existing `driver_id` column.
+
+  For phone and license-plate validation on an existing database, back it up and
+  run `BE\database\migrations\20261029_validate_unique_contact_identifiers.sql`
+  once. Resolve any existing duplicate phone numbers within accounts/drivers and
+  between accounts and drivers, as well as duplicate vehicle plates, before
+  running the migration; its unique indexes intentionally stop if duplicates
+  already exist within a table. This migration is only needed for databases not
+  created from the current root `sql.sql`.
+
+  Vehicle photos are uploaded to `BE\uploads\vehicles` and named from the
+  vehicle ID. This feature does not require a database schema change or
+  migration. Keep the backend uploads directory on persistent storage and
+  include it in backups.
 
   The Partner Dashboard's **Quản lý chuyến → Lịch trình → Tạo lịch chạy định kỳ**
   flow previews each departure and estimated arrival, checks vehicle turnaround
-  (minimum 60 minutes), configured transfer time, driver overlap, and existing
-  trips, then creates each valid trip and its seats in a MySQL transaction.
+  (minimum 60 minutes), driver overlap, and existing trips, then creates each
+  valid trip and its seats in a MySQL transaction. It alternates trips between
+  the selected endpoints: each chosen operating time starts an outbound cycle,
+  followed by return trips after the minimum turnaround, continuing until the
+  next chosen start or the selected end date.
+  Each trip can have one primary driver and multiple secondary drivers; recurring
+  schedule assignments are copied to every generated outbound and return trip.
   Choose all-or-nothing or explicitly allow valid trips only. Requests carry an
   idempotency key so retrying the same confirmation does not duplicate trips.
   Generated trips retain their estimated duration and arrival time; later edits
@@ -93,10 +122,21 @@
   status changed through the regular schedule editor.
 
   Each template supports at most 91 calendar days, 8 departure times per day,
-  and 728 generated trips per request. The current schema has route endpoints
+  and 728 generated trips per request. Scheduled departures are limited to
+  08:00–20:00 local time. If the next leg after turnaround would depart after
+  20:00, the cycle waits for the partner's next configured departure time on
+  the following scheduled day. The current schema has route endpoints
   only (not pickup/drop-off stops or coordinates); enter stop, en-route rest,
-  buffer, and between-route transfer minutes as operator estimates. The 60-minute
+  and buffer minutes as operator estimates. These four operating-time components
+  determine each trip's arrival and automatic completion time; minimum turnaround
+  is added before the next return trip departs. The backend refreshes trip status
+  and settles completed trips once per minute while it is running. The 60-minute
   vehicle turnaround check is not a legal driver-hours compliance check.
+
+  Account, driver, and booking phone numbers are validated as Vietnamese mobile
+  numbers and normalized to the `0` prefix; account and driver phone numbers
+  cannot be reused. Vehicle plates are validated and normalized before saving,
+  and a database unique index prevents duplicate plates.
 
   Google Routes is optional. Enable the Routes API and billing/quotas for the
   Google Cloud project, then provide the key only to the backend process as

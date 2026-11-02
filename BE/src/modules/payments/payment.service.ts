@@ -4,6 +4,7 @@ import {
 } from 'mysql2';
 
 import pool from '../../config/database.js';
+import { recordSystemFinancialTransaction } from '../../utils/system-financial.util.js';
 
 import {
   buildVNPayPaymentUrl,
@@ -797,6 +798,14 @@ export class PaymentService {
             'Payment không liên kết với booking hoặc payment order.',
           );
         }
+
+        await recordSystemFinancialTransaction(connection, {
+          accountCode: 'SYSTEM_WALLET',
+          transactionType: 'PAYMENT',
+          amount: Number(payment.amount),
+          referenceCode: payment.txn_ref,
+          description: `Thu tiền giao dịch ${payment.txn_ref}`,
+        });
 
         await connection.commit();
 

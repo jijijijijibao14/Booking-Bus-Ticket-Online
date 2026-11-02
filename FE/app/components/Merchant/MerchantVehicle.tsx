@@ -1,5 +1,7 @@
 import React from 'react';
 import { Plus } from 'lucide-react';
+import { getPublicAssetUrl } from '@/api';
+import { formatVietnameseLicensePlate } from '@/utils/license-plate';
 
 type Props = {
   buses: any[];
@@ -36,6 +38,7 @@ export default function MerchantVehicle({ buses, loading, error, onAdd, onEdit, 
             <thead className="bg-muted border-b border-border">
               <tr>
                 <th className="text-left p-4 font-semibold text-sm">ID</th>
+                <th className="text-left p-4 font-semibold text-sm">Ảnh</th>
                 <th className="text-left p-4 font-semibold text-sm">Biển Số</th>
                 <th className="text-left p-4 font-semibold text-sm">Loại Xe</th>
                 <th className="text-left p-4 font-semibold text-sm">Số Ghế</th>
@@ -48,7 +51,18 @@ export default function MerchantVehicle({ buses, loading, error, onAdd, onEdit, 
               {buses.map((bus: any) => (
                 <tr key={bus.id} className="border-b border-border hover:bg-muted/50">
                   <td className="p-4 font-mono text-sm">{bus.id}</td>
-                  <td className="p-4 font-semibold">{bus.plate_number || bus.plateNumber}</td>
+                  <td className="p-4">
+                    {bus.imageUrl ? (
+                      <img
+                        src={getPublicAssetUrl(bus.imageUrl)}
+                        alt={`Ảnh ${formatVietnameseLicensePlate(bus.plate_number || bus.plateNumber)}`}
+                        className="h-14 w-20 rounded-md object-cover"
+                      />
+                    ) : (
+                      <span className="text-sm text-muted-foreground">Chưa có ảnh</span>
+                    )}
+                  </td>
+                  <td className="p-4 font-semibold">{formatVietnameseLicensePlate(bus.plate_number || bus.plateNumber)}</td>
                   <td className="p-4">{bus.type}</td>
                   <td className="p-4">{bus.seats}</td>
                   <td className={`p-4 ${(bus.status || '').toString().toLowerCase() === 'active' ? 'text-green-600' : 'text-red-600'}`}>

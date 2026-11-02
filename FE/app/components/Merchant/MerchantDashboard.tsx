@@ -1,44 +1,72 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { LayoutDashboard, Bus, Users, Calendar, DollarSign, ChevronLeft, Plus, TrendingUp, AlertCircle, MapPin, MessageSquare, MessageCircle, Home } from 'lucide-react';
+import { LayoutDashboard, Bus, Users, Calendar, DollarSign, ChevronLeft, Plus, TrendingUp, AlertCircle, MapPin, MessageSquare, Home, LogOut } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { getMerchantStats, getMerchantFleet, getMerchantDrivers, getMerchantSchedules, createMerchantSchedule, updateMerchantSchedule, deleteMerchantSchedule, createMerchantBus, updateMerchantBus, deleteMerchantBus, createMerchantDriver, updateMerchantDriver, deleteMerchantDriver, getMerchantRefunds, approveMerchantRefund, rejectMerchantRefund, } from '@/api';
+import { getMerchantStats, getMerchantFleet, getMerchantDrivers, getMerchantSchedules, createMerchantSchedule, updateMerchantSchedule, deleteMerchantSchedule, createMerchantBus, updateMerchantBus, deleteMerchantBus, createMerchantDriver, updateMerchantDriver, deleteMerchantDriver, getMerchantRefunds, getMerchantFeedback, approveMerchantRefund, rejectMerchantRefund, getPublicAssetUrl } from '@/api';
+import { formatVietnameseLicensePlate, isValidVietnameseLicensePlate } from '@/utils/license-plate';
 import MerchantOverview from './MerchantOverview';
 import MerchantVehicle from './MerchantVehicle';
 import MerchantDriver from './MerchantDriver';
 import MerchantSchedule from './MerchantSchedule';
 import MerchantRefund from './MerchantRefund';
 import MerchantFeedback from './MerchantFeedback';
-import ConversationInbox from '../communications/ConversationInbox';
+import MerchantAnalytics from './MerchantAnalytics';
 import RecurringScheduleManager from './RecurringScheduleManager';
+import DriverMultiSelect from './DriverMultiSelect';
+import { provinceOptions } from '@/utils/province-options';
+import { formControlClassName } from '@/utils/form-styles';
+import { showAlertDialog } from '@/utils/modal-dialog';
 
-type Tab = 'overview' | 'operations' | 'refunds' | 'analytics' | 'feedback' | 'messages';
+type Tab = 'overview' | 'operations' | 'refunds' | 'analytics' | 'feedback';
 type OperationsTab = 'fleet' | 'drivers' | 'schedule';
 type Resource = 'bus' | 'driver' | 'schedule';
 
-const provinceOptions = [
-  'Hà Nội',
-  'TP. Hồ Chí Minh',
-  'Sài Gòn',
-  'Đà Nẵng',
-  'Hải Phòng',
-  'Cần Thơ',
-  'Quảng Ninh',
-  'Lào Cai',
-  'Sapa',
-  'Đà Lạt',
-  'Nha Trang',
-  'Huế',
-  'Nghệ An',
-  'Thanh Hóa',
-  'Bình Định',
-  'Khánh Hòa',
-  'Lâm Đồng',
-  'Đắk Lắk',
-  'Kiên Giang',
-  'Bình Dương',
-  'Đồng Nai'
-];
+function parseDriverIds(value: number[] | string | null | undefined): number[] {
+  if (Array.isArray(value)) {
+    return value.filter((id) => Number.isSafeInteger(id) && id > 0);
+  }
+  if (!value) return [];
+  return value.split(',')
+    .map((id) => Number(id))
+    .filter((id) => Number.isSafeInteger(id) && id > 0);
+}
+
+function getReservedDriverIds(
+  schedules: any[],
+  startDate: string,
+  endDate: string,
+  excludedScheduleId?: string,
+): Set<number> {
+  const reservedDriverIds = new Set<number>();
+  const dateOnly = (value: string | null | undefined) =>
+    String(value || '').slice(0, 10);
+
+  if (!startDate || !endDate) return reservedDriverIds;
+
+  schedules.forEach((schedule) => {
+    if (
+      excludedScheduleId &&
+      Number(schedule.id) === Number(excludedScheduleId)
+    ) {
+      return;
+    }
+    if (schedule.status === 'Cancelled') return;
+    if (
+      dateOnly(schedule.departureTime) > endDate ||
+      dateOnly(schedule.arrivalTime) < startDate
+    ) {
+      return;
+    }
+    if (schedule.driverId) {
+      reservedDriverIds.add(Number(schedule.driverId));
+    }
+    parseDriverIds(schedule.secondaryDriverIds).forEach((driverId) =>
+      reservedDriverIds.add(driverId),
+    );
+  });
+
+  return reservedDriverIds;
+}
 
 export default function MerchantDashboard() {
   const navigate = useNavigate();
@@ -47,6 +75,8 @@ export default function MerchantDashboard() {
   const [activeTab, setActiveTab] = useState<Tab>('overview');
   const [operationsTab, setOperationsTab] = useState<OperationsTab>('fleet');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [pendingRefundCount, setPendingRefundCount] = useState(0);
+  const [unansweredFeedbackCount, setUnansweredFeedbackCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,6 +87,8 @@ export default function MerchantDashboard() {
   const [showDriverModal, setShowDriverModal] = useState(false);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [isEditingBus, setIsEditingBus] = useState(false);
+  const [busImageFile, setBusImageFile] = useState<File | null>(null);
+  const [busImagePreview, setBusImagePreview] = useState<string | null>(null);
   const [isEditingDriver, setIsEditingDriver] = useState(false);
   const [isEditingSchedule, setIsEditingSchedule] = useState(false);
   const [drivers, setDrivers] = useState<any[]>([]);
@@ -66,7 +98,7 @@ export default function MerchantDashboard() {
 
   useEffect(() => {
     const tab = searchParams.get('tab');
-    const validTabs: Tab[] = ['overview', 'operations', 'refunds', 'analytics', 'feedback', 'messages'];
+    const validTabs: Tab[] = ['overview', 'operations', 'refunds', 'analytics', 'feedback'];
     const legacyOperationsTabs: OperationsTab[] = ['fleet', 'drivers', 'schedule'];
     if (!section && tab && legacyOperationsTabs.includes(tab as OperationsTab)) {
       setActiveTab('operations');
@@ -92,7 +124,14 @@ export default function MerchantDashboard() {
     seats: "",
     status: "",
     name: "",
+    imageUrl: "",
   });
+
+  useEffect(() => {
+    return () => {
+      if (busImagePreview?.startsWith('blob:')) URL.revokeObjectURL(busImagePreview);
+    };
+  }, [busImagePreview]);
 
   const [driverForm, setDriverForm] = useState({
     id: "",
@@ -108,8 +147,9 @@ export default function MerchantDashboard() {
     arrivalLocation: "",
     vehicleId: "",
     driverId: "",
+    secondaryDriverIds: [] as number[],
     departureTime: "",
-    durationMinutes: "180",
+    durationHours: "3",
     price: "",
     status: "scheduled",
   });
@@ -151,10 +191,7 @@ export default function MerchantDashboard() {
 
   // Các công cụ hỗ trợ thí nghiệm: chuẩn hóa và xác thực
   const normalizePlate = (s: string) => (s || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
-  const isValidPlate = (p: string) => {
-    // After normalization expect formats like 51A-123.45 (2 digits + letter + 5 digits)
-    return /^[0-9]{2}[A-Z][0-9]{5}$/.test(p);
-  };
+  const isValidPlate = (plate: string) => /^[0-9]{2}[A-Z][0-9]{5}$/.test(plate);
 
   const [busFormError, setBusFormError] = useState<string>('');
   const [driverFormError, setDriverFormError] = useState<string>('');
@@ -183,6 +220,9 @@ export default function MerchantDashboard() {
         } else if (activeTab === 'refunds') {
           const refundsRes = await getMerchantRefunds();
           setRefunds(refundsRes.data.data);
+          setPendingRefundCount(
+            refundsRes.data.data.filter((refund: any) => refund.status === 'Pending').length,
+          );
         }
       } catch (err) {
         setError('Không thể tải dữ liệu. Vui lòng thử lại.');
@@ -195,13 +235,72 @@ export default function MerchantDashboard() {
     fetchData();
   }, [activeTab]);
 
+  useEffect(() => {
+    if (activeTab !== 'operations') return;
+
+    let mounted = true;
+    const refreshSchedules = async () => {
+      try {
+        const response = await getMerchantSchedules();
+        if (mounted) {
+          setSchedules(sortSchedulesByRecency(response.data.data || []));
+          setError(null);
+        }
+      } catch (requestError) {
+        console.error('Could not refresh trip statuses:', requestError);
+        if (mounted) setError('Không thể cập nhật trạng thái chuyến. Vui lòng tải lại trang.');
+      }
+    };
+
+    const timer = window.setInterval(() => {
+      void refreshSchedules();
+    }, 60_000);
+    return () => {
+      mounted = false;
+      window.clearInterval(timer);
+    };
+  }, [activeTab]);
+
+  useEffect(() => {
+    let mounted = true;
+    const refreshNotificationCounts = async () => {
+      const [refundsResult, feedbackResult] = await Promise.allSettled([
+        getMerchantRefunds(),
+        getMerchantFeedback(),
+      ]);
+
+      if (!mounted) return;
+      if (refundsResult.status === 'fulfilled') {
+        const items = refundsResult.value.data.data || [];
+        setPendingRefundCount(items.filter((refund: any) => refund.status === 'Pending').length);
+      } else {
+        console.error('Could not refresh merchant refund notifications:', refundsResult.reason);
+      }
+
+      if (feedbackResult.status === 'fulfilled') {
+        const items = feedbackResult.value.data.data || [];
+        setUnansweredFeedbackCount(items.filter((feedback: any) => !feedback.partnerReply).length);
+      } else {
+        console.error('Could not refresh merchant review notifications:', feedbackResult.reason);
+      }
+    };
+
+    void refreshNotificationCounts();
+    const timer = window.setInterval(() => {
+      void refreshNotificationCounts();
+    }, 30_000);
+    return () => {
+      mounted = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   const menuItems = [
-    { id: 'overview' as Tab, label: 'Tổng Quan', icon: LayoutDashboard },
-    { id: 'operations' as Tab, label: 'Quản Lý Các Chuyến', icon: Bus },
-    { id: 'refunds' as Tab, label: 'Hoàn Tiền', icon: AlertCircle },
-    { id: 'analytics' as Tab, label: 'Báo Cáo', icon: DollarSign },
-    { id: 'feedback' as Tab, label: 'Đánh Giá', icon: MessageSquare },
-    { id: 'messages' as Tab, label: 'Tin Nhắn', icon: MessageCircle },
+    { id: 'overview' as Tab, label: 'Tổng quan', icon: LayoutDashboard },
+    { id: 'operations' as Tab, label: 'Quản lý chuyến', icon: Bus },
+    { id: 'refunds' as Tab, label: 'Hoàn tiền', icon: AlertCircle },
+    { id: 'analytics' as Tab, label: 'Báo cáo', icon: DollarSign },
+    { id: 'feedback' as Tab, label: 'Đánh giá', icon: MessageSquare },
   ];
 
   // Helper để hiển thị loading/error
@@ -221,7 +320,10 @@ export default function MerchantDashboard() {
         seats: "",
         status: "",
         name: "",
+        imageUrl: "",
       });
+      setBusImageFile(null);
+      setBusImagePreview(null);
       setBusFormError('');
       setShowBusModal(true);
     } else if (resource === 'driver') {
@@ -243,8 +345,9 @@ export default function MerchantDashboard() {
         arrivalLocation: "",
         vehicleId: "",
         driverId: "",
+        secondaryDriverIds: [],
         departureTime: "",
-        durationMinutes: "180",
+        durationHours: "3",
         price: "",
         status: "scheduled",
       });
@@ -260,12 +363,15 @@ export default function MerchantDashboard() {
       setIsEditingBus(true);
       setBusForm({
         id: item.id,
-        plateNumber: item.plate_number || item.plateNumber,
+        plateNumber: formatVietnameseLicensePlate(item.plate_number || item.plateNumber),
         type: item.type || 'Bus',
         seats: item.seats,
         status: item.status || 'active',
         name: item.name,
+        imageUrl: item.imageUrl || item.image_url || '',
       });
+      setBusImageFile(null);
+      setBusImagePreview(getPublicAssetUrl(item.imageUrl || item.image_url || null) || null);
       setBusFormError('');
       setShowBusModal(true);
     } else if (resource === 'driver') {
@@ -287,8 +393,9 @@ export default function MerchantDashboard() {
         arrivalLocation: item.arrivalLocation || '',
         vehicleId: item.vehicleId?.toString() || '',
         driverId: item.driverId?.toString() || '',
+        secondaryDriverIds: parseDriverIds(item.secondaryDriverIds),
         departureTime: item.departureTime || '',
-        durationMinutes: String(item.estimatedDurationMinutes || 180),
+        durationHours: String(Number(((item.estimatedDurationMinutes || 180) / 60).toFixed(2))),
         price: item.price?.toString() || '',
         status: item.status || 'scheduled',
       });
@@ -311,6 +418,9 @@ export default function MerchantDashboard() {
       await approveMerchantRefund(refund.id);
       const refundsRes = await getMerchantRefunds();
       setRefunds(refundsRes.data.data);
+      setPendingRefundCount(
+        refundsRes.data.data.filter((item: any) => item.status === 'Pending').length,
+      );
     } catch (err: any) {
       console.error('Lỗi duyệt hoàn tiền:', err);
       setError(err.response?.data?.message || err.message || 'Duyệt hoàn tiền thất bại.');
@@ -326,6 +436,9 @@ export default function MerchantDashboard() {
       await rejectMerchantRefund(refund.id);
       const refundsRes = await getMerchantRefunds();
       setRefunds(refundsRes.data.data);
+      setPendingRefundCount(
+        refundsRes.data.data.filter((item: any) => item.status === 'Pending').length,
+      );
     } catch (err: any) {
       console.error('Lỗi từ chối hoàn tiền:', err);
       setError(err.response?.data?.message || err.message || 'Từ chối hoàn tiền thất bại.');
@@ -350,6 +463,21 @@ export default function MerchantDashboard() {
     }
   };
 
+  const updatePrimaryDriver = (driverId: string) => {
+    setScheduleForm((current) => ({
+      ...current,
+      driverId,
+      secondaryDriverIds: current.secondaryDriverIds.filter((id) => id !== Number(driverId)),
+    }));
+  };
+
+  const updateSecondaryDrivers = (driverIds: number[]) => {
+    setScheduleForm((current) => ({
+      ...current,
+      secondaryDriverIds: driverIds.filter((id) => id !== Number(current.driverId)),
+    }));
+  };
+
   const handleSave = async (resource: Resource) => {
     if (resource === 'bus') {
       try {
@@ -363,8 +491,16 @@ export default function MerchantDashboard() {
         }
 
         const normalizedPlate = normalizePlate(trimmedPlateNumber);
-        if (!isValidPlate(normalizedPlate)) {
-          setBusFormError('Biển số không hợp lệ. Ví dụ hợp lệ: 51A-123.45');
+        if (!isValidVietnameseLicensePlate(trimmedPlateNumber) || !isValidPlate(normalizedPlate)) {
+          setBusFormError('Biển số phải có dạng 51A-12345.');
+          return;
+        }
+        const duplicatePlate = buses.some((bus) =>
+          Number(bus.id) !== Number(busForm.id) &&
+          normalizePlate(bus.plateNumber || bus.license_plate || bus.plate_number) === normalizedPlate,
+        );
+        if (duplicatePlate) {
+          setBusFormError('Biển số xe đã tồn tại trong hệ thống.');
           return;
         }
         setBusFormError('');
@@ -374,13 +510,13 @@ export default function MerchantDashboard() {
           return;
         }
         setBusFormError('');
-        const payload = {
-          vehicle_name: trimmedName,
-          license_plate: trimmedPlateNumber,
-          vehicle_type: busForm.type,
-          total_seats: seatsNumber,
-          status: (busForm.status || 'active').toString().toLowerCase(),
-        };
+        const payload = new FormData();
+        payload.append('vehicle_name', trimmedName);
+        payload.append('license_plate', formatVietnameseLicensePlate(trimmedPlateNumber));
+        payload.append('vehicle_type', busForm.type);
+        payload.append('total_seats', String(seatsNumber));
+        payload.append('status', (busForm.status || 'active').toString().toLowerCase());
+        if (busImageFile) payload.append('image', busImageFile);
 
         if (isEditingBus && busForm.id) {
           await updateMerchantBus(busForm.id, payload);
@@ -390,6 +526,8 @@ export default function MerchantDashboard() {
 
         const fleetRes = await getMerchantFleet();
         setBuses(fleetRes.data.data);
+        setBusImageFile(null);
+        setBusImagePreview(null);
         setShowBusModal(false);
       } catch (err: any) {
         console.error('Lỗi lưu xe:', err);
@@ -411,10 +549,18 @@ export default function MerchantDashboard() {
           setDriverFormError('Kinh nghiệm ít nhất là 1 năm.');
           return;
         }
-        const normalized = rawPhone.replace(/[\s\-()]/g, '');
-        const isValidPhone = /^0\d{9}$/.test(normalized);
+        const normalized = rawPhone.replace(/[\s().-]/g, '');
+        const isValidPhone = /^0(?:3[2-9]|5[2689]|7[06789]|8[1-9]|9[0-46-9])[0-9]{7}$/.test(normalized);
         if (!isValidPhone) {
-          setDriverFormError('Số điện thoại phải có 10 số và bắt đầu bằng 0.');
+          setDriverFormError('Số điện thoại phải là số di động Việt Nam hợp lệ.');
+          return;
+        }
+        const duplicatePhone = drivers.some((driver) =>
+          Number(driver.id) !== Number(driverForm.id) &&
+          String(driver.phone || driver.driver_phone || '').replace(/[\s().-]/g, '') === normalized,
+        );
+        if (duplicatePhone) {
+          setDriverFormError('Số điện thoại đã được sử dụng trong hệ thống.');
           return;
         }
         setDriverFormError('');
@@ -447,15 +593,16 @@ export default function MerchantDashboard() {
         const vehicleId = Number(scheduleForm.vehicleId);
         const driverId = Number(scheduleForm.driverId);
         const departureTime = scheduleForm.departureTime.trim();
-        const durationMinutes = Number(scheduleForm.durationMinutes);
+        const durationHours = Number(scheduleForm.durationHours);
+        const durationMinutes = Math.round(durationHours * 60);
         const basePrice = Number(scheduleForm.price);
 
         if (!departureLocation || !arrivalLocation || !vehicleId || !departureTime || !scheduleForm.price) {
           setScheduleFormError('Vui lòng điền đầy đủ thông tin lịch trình.');
           return;
         }
-        if (!Number.isSafeInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 2880) {
-          setScheduleFormError('Thời lượng chuyến phải từ 1 đến 2880 phút.');
+        if (!Number.isFinite(durationHours) || durationHours <= 0 || durationHours > 48 || durationMinutes < 1) {
+          setScheduleFormError('Thời lượng chuyến phải lớn hơn 0 và không vượt quá 48 giờ.');
           return;
         }
 
@@ -505,11 +652,23 @@ export default function MerchantDashboard() {
           return false;
         });
 
+        const selectedDriverIds = [...new Set([
+          ...(driverId ? [driverId] : []),
+          ...scheduleForm.secondaryDriverIds,
+        ])];
+        if (selectedDriverIds.some((id) => unavailableDriverIds.has(id))) {
+          setScheduleFormError('Tài xế đã được phân công cho lịch chạy trong khoảng ngày đã chọn.');
+          return;
+        }
         const hasDriverConflict = schedules.some((s) => {
           if (isEditingSchedule && Number(s.id) === Number(scheduleForm.id)) {
             return false;
           }
-          if (s.driverId && Number(s.driverId) === driverId) {
+          const assignedDriverIds = [
+            ...(s.driverId ? [Number(s.driverId)] : []),
+            ...parseDriverIds(s.secondaryDriverIds),
+          ];
+          if (assignedDriverIds.some((id) => selectedDriverIds.includes(id))) {
             const sDep = new Date(s.departureTime);
             const sArr = s.arrivalTime ? new Date(s.arrivalTime) : new Date(sDep.getTime() + 24 * 60 * 60 * 1000);
             return !(arrivalDate <= sDep || departureDate >= sArr);
@@ -534,6 +693,7 @@ export default function MerchantDashboard() {
           arrival_location: arrivalLocation,
           vehicle_id: vehicleId,
           driver_id: driverId,
+          secondary_driver_ids: scheduleForm.secondaryDriverIds,
           departure_time: departureTime,
           estimated_duration_minutes: durationMinutes,
           base_price: basePrice,
@@ -557,11 +717,19 @@ export default function MerchantDashboard() {
     }
   };
 
+  const selectedScheduleDate = scheduleForm.departureTime.slice(0, 10);
+  const unavailableDriverIds = getReservedDriverIds(
+    schedules,
+    selectedScheduleDate,
+    selectedScheduleDate,
+    scheduleForm.id,
+  );
+
   return (
-    <div className="min-h-screen bg-muted flex">
+    <div className="flex h-screen overflow-hidden bg-muted font-sans">
       <aside
         className={`${sidebarCollapsed ? 'w-20' : 'w-64'
-          } bg-sidebar text-sidebar-foreground transition-all duration-300 flex flex-col border-r border-sidebar-border`}
+          } h-screen shrink-0 bg-sidebar text-sidebar-foreground transition-all duration-300 flex flex-col border-r border-sidebar-border`}
       >
         <div className="p-4 border-b border-sidebar-border flex items-center gap-2">
           <button
@@ -586,19 +754,25 @@ export default function MerchantDashboard() {
           </button>
         </div>
  
-        <nav className="flex-1 p-4">
+        <nav className="flex-1 overflow-y-auto p-4">
           <ul className="space-y-2">
             {menuItems.map((item) => (
               <li key={item.id}>
                 <button
                   onClick={() => navigate(`/merchant/${item.id}`)}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === item.id
+                  className={`w-full flex items-center gap-3 rounded-lg px-4 py-3 text-left text-sm font-medium transition-colors ${activeTab === item.id
                     ? 'bg-sidebar-primary text-sidebar-primary-foreground'
                     : 'hover:bg-sidebar-accent text-sidebar-foreground/80'
                     }`}
                 >
-                  <item.icon className="w-5 h-5 flex-shrink-0" />
+                  <item.icon className="h-5 w-5 flex-shrink-0" />
                   {!sidebarCollapsed && <span>{item.label}</span>}
+                  {((item.id === 'refunds' && pendingRefundCount > 0)
+                    || (item.id === 'feedback' && unansweredFeedbackCount > 0)) && (
+                    <span className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1.5 text-xs font-bold text-white">
+                      {item.id === 'refunds' ? pendingRefundCount : unansweredFeedbackCount}
+                    </span>
+                  )}
                 </button>
               </li>
             ))}
@@ -608,14 +782,17 @@ export default function MerchantDashboard() {
         <div className="p-4 border-t border-sidebar-border">
           <button
             onClick={() => navigate('/login')}
-            className="w-full px-4 py-2 rounded-lg bg-sidebar-accent hover:bg-sidebar-accent/80 text-sidebar-foreground text-sm"
+            className={`flex w-full items-center gap-3 rounded-lg px-4 py-3 text-left text-sm font-medium text-sidebar-foreground/80 transition-colors hover:bg-sidebar-accent ${
+              sidebarCollapsed ? 'justify-center px-2' : ''
+            }`}
           >
-            {!sidebarCollapsed ? 'Đăng Xuất' : '↩'}
+            <LogOut className="h-5 w-5 shrink-0" />
+            {!sidebarCollapsed && <span>Đăng xuất</span>}
           </button>
         </div>
       </aside>
 
-      <main className="flex-1 overflow-auto">
+      <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
         <div className="p-8">
           {activeTab === 'overview' && (
             <MerchantOverview
@@ -677,6 +854,7 @@ export default function MerchantDashboard() {
                   <RecurringScheduleManager
                     vehicles={buses}
                     drivers={drivers}
+                    schedules={schedules}
                     onCreated={async () => {
                       const schedulesRes = await getMerchantSchedules();
                       setSchedules(sortSchedulesByRecency(schedulesRes.data.data || []));
@@ -714,26 +892,11 @@ export default function MerchantDashboard() {
                 <p className="text-muted-foreground">Thống kê doanh thu và hiệu suất</p>
               </div>
 
-              {renderContent(<div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div className="bg-white rounded-xl p-6 border border-border">
-                  <h3 className="font-semibold mb-4">Doanh Thu 6 Tháng Gần Nhất</h3>
-                  <ResponsiveContainer width="100%" height={300}>
-                    <LineChart data={revenueData}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="month" />
-                      <YAxis tickFormatter={(value) => `${value}M`} />
-                      <Tooltip formatter={(value) => `${value}M₫`} />
-                      <Legend />
-                      <Line type="monotone" dataKey="revenue" stroke="#1e3a8a" strokeWidth={3} name="Doanh thu (triệu)" />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>)}
+              {renderContent(<MerchantAnalytics stats={stats} revenueData={revenueData} />)}
             </>
           )}
 
           {activeTab === 'feedback' && <MerchantFeedback />}
-          {activeTab === 'messages' && <ConversationInbox role="Partner" />}
         </div>
 
         {showBusModal && (
@@ -742,29 +905,65 @@ export default function MerchantDashboard() {
               <h3 className="text-lg font-semibold mb-4">{isEditingBus ? 'Chỉnh sửa xe' : 'Thêm xe mới'}</h3>
               <div className="space-y-3">
                 <div>
-                  <label className="block text-sm mb-1">Tên hạng xe</label>
-                  <input value={busForm.name} onChange={(e) => handleChange('bus', 'name', e.target.value)} className="w-full px-3 py-2 border border-border rounded-lg" />
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Tên hạng xe</label>
+                  <input value={busForm.name} onChange={(e) => handleChange('bus', 'name', e.target.value)} className={formControlClassName} />
                 </div>
                 <div>
-                  <label className="block text-sm mb-1">Biển số</label>
-                  <input value={busForm.plateNumber} onChange={(e) => handleChange('bus', 'plateNumber', e.target.value)} className="w-full px-3 py-2 border border-border rounded-lg" />
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Biển số</label>
+                  <input value={busForm.plateNumber} onChange={(e) => handleChange('bus', 'plateNumber', e.target.value.toUpperCase())} pattern="[0-9]{2}[A-Za-z]-[0-9]{5}" title="Biển số phải có dạng 51A-12345; chữ cái được tự động viết hoa" className={formControlClassName} />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Ảnh xe (JPG, PNG hoặc WebP; tối đa 5 MB)</label>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (!file) return;
+                      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+                        setBusFormError('Ảnh xe chỉ hỗ trợ định dạng JPG, PNG hoặc WebP.');
+                        setBusImageFile(null);
+                        setBusImagePreview(getPublicAssetUrl(busForm.imageUrl) || null);
+                        event.target.value = '';
+                        return;
+                      }
+                      if (file.size > 5 * 1024 * 1024) {
+                        setBusFormError('Ảnh xe không được vượt quá 5 MB.');
+                        setBusImageFile(null);
+                        setBusImagePreview(getPublicAssetUrl(busForm.imageUrl) || null);
+                        event.target.value = '';
+                        return;
+                      }
+                      setBusFormError('');
+                      setBusImageFile(file);
+                      setBusImagePreview(URL.createObjectURL(file));
+                    }}
+                    className={`${formControlClassName} py-1.5 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-2 file:py-1 file:text-sm file:font-medium file:text-slate-700`}
+                  />
+                  {busImagePreview && (
+                    <img
+                      src={busImagePreview}
+                      alt="Xem trước ảnh xe"
+                      className="mt-3 h-36 w-full rounded-lg object-cover"
+                    />
+                  )}
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-sm mb-1">Loại</label>
-                    <input value={busForm.type} className="w-full px-3 py-2 border border-border rounded-lg" />
+                    <label className="mb-1 block text-sm font-medium text-slate-700">Loại xe</label>
+                    <input value={busForm.type} readOnly className={formControlClassName} />
                   </div>
                   <div>
-                    <label className="block text-sm mb-1">Số ghế</label>
-                    <input value={busForm.seats} onChange={(e) => handleChange('bus', 'seats', e.target.value)} type="number" className="w-full px-3 py-2 border border-border rounded-lg" />
+                    <label className="mb-1 block text-sm font-medium text-slate-700">Số ghế</label>
+                    <input value={busForm.seats} onChange={(e) => handleChange('bus', 'seats', e.target.value)} type="number" className={formControlClassName} />
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm mb-1">Trạng thái</label>
-                  <select value={busForm.status} onChange={(e) => handleChange('bus', 'status', e.target.value)} className="w-full px-3 py-2 border border-border rounded-lg">
-                    <option value="" style={{ color: "#65676a" }}>--Chọn trạng thái--</option>
-                    <option value="active">Active</option>
-                    <option value="maintenance">Maintenance</option>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Trạng thái</label>
+                  <select value={busForm.status} onChange={(e) => handleChange('bus', 'status', e.target.value)} className={formControlClassName}>
+                    <option value="" style={{ color: "#65676a" }}>Chọn trạng thái</option>
+                    <option value="active">Đang hoạt động</option>
+                    <option value="maintenance">Bảo trì</option>
                   </select>
                 </div>
                 {busFormError && (
@@ -785,24 +984,24 @@ export default function MerchantDashboard() {
               <h3 className="text-lg font-semibold mb-4">{isEditingDriver ? 'Chỉnh sửa tài xế' : 'Thêm tài xế mới'}</h3>
               <div className="space-y-3">
                 <div>
-                  <label className="block text-sm mb-1">Tên tài xế</label>
-                  <input value={driverForm.driver_name} onChange={(e) => handleChange('driver', 'driver_name', e.target.value)} className="w-full px-3 py-2 border border-border rounded-lg" />
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Tên tài xế</label>
+                  <input value={driverForm.driver_name} onChange={(e) => handleChange('driver', 'driver_name', e.target.value)} className={formControlClassName} />
                 </div>
                 <div>
-                  <label className="block text-sm mb-1">Số điện thoại</label>
-                  <input value={driverForm.driver_phone} onChange={(e) => handleChange('driver', 'driver_phone', e.target.value)} className="w-full px-3 py-2 border border-border rounded-lg" />
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Số điện thoại</label>
+                  <input type="tel" value={driverForm.driver_phone} onChange={(e) => handleChange('driver', 'driver_phone', e.target.value)} pattern="0(3[2-9]|5[2689]|7[06789]|8[1-9]|9[0-46-9])[0-9]{7}" maxLength={10} title="Nhập số di động Việt Nam gồm 10 chữ số" className={formControlClassName} />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-sm mb-1">Kinh nghiệm(năm)</label>
-                    <input value={driverForm.experience} onChange={(e) => handleChange('driver', 'experience', e.target.value)} type="number" className="w-full px-3 py-2 border border-border rounded-lg" />
+                    <label className="mb-1 block text-sm font-medium text-slate-700">Kinh nghiệm (năm)</label>
+                    <input value={driverForm.experience} onChange={(e) => handleChange('driver', 'experience', e.target.value)} type="number" className={formControlClassName} />
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm mb-1">Trạng thái</label>
-                  <select value={driverForm.status} onChange={(e) => handleChange('driver', 'status', e.target.value)} className="w-full px-3 py-2 border border-border rounded-lg">
-                    <option value="" style={{ color: "#65676a" }}>--Chọn trạng thái--</option>
-                    <option value="available">Sẵn Sàng</option>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Trạng thái</label>
+                  <select value={driverForm.status} onChange={(e) => handleChange('driver', 'status', e.target.value)} className={formControlClassName}>
+                    <option value="" style={{ color: "#65676a" }}>Chọn trạng thái</option>
+                    <option value="available">Sẵn sàng</option>
                     <option value="on-trip">Đang chạy</option>
                     <option value="off-duty">Nghỉ</option>
                   </select>
@@ -820,13 +1019,13 @@ export default function MerchantDashboard() {
         )}
 
         {showScheduleModal && (
-          <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-            <div className="w-full max-w-xl bg-white rounded-lg p-6 border border-border">
+          <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/40 p-4">
+            <div className="w-full max-w-xl max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain bg-white rounded-lg p-4 sm:p-6 border border-border">
               <h3 className="text-lg font-semibold mb-4">{isEditingSchedule ? 'Chỉnh sửa lịch trình' : 'Thêm lịch trình mới'}</h3>
               <div className="grid grid-cols-1 gap-4">
                 <div className="relative">
-                  <label className="block text-sm mb-1 flex items-center gap-2 text-foreground">
-                    <MapPin className="w-4 h-4" /> Điểm Khởi Hành
+                  <label className="mb-1 flex items-center gap-2 text-sm font-medium text-slate-700">
+                    <MapPin className="h-4 w-4" /> Điểm khởi hành
                   </label>
                   <input
                     value={scheduleForm.departureLocation}
@@ -834,7 +1033,7 @@ export default function MerchantDashboard() {
                     onFocus={() => setShowDepartureSuggestions(scheduleForm.departureLocation.trim().length >= 1)}
                     onBlur={() => setTimeout(() => setShowDepartureSuggestions(false), 150)}
                     placeholder="Nhập tỉnh/TP"
-                    className="w-full px-3 py-2 border border-border rounded-lg bg-white text-black"
+                    className={formControlClassName}
                   />
                   {showDepartureSuggestions && filteredDepartureOptions.length > 0 && (
                     <div className="absolute z-20 mt-1 max-h-52 w-full overflow-auto rounded-xl border border-border bg-white text-black shadow-lg">
@@ -855,8 +1054,8 @@ export default function MerchantDashboard() {
                   )}
                 </div>
                 <div className="relative">
-                  <label className="block text-sm mb-1 flex items-center gap-2 text-foreground">
-                    <MapPin className="w-4 h-4" /> Điểm Đến
+                  <label className="mb-1 flex items-center gap-2 text-sm font-medium text-slate-700">
+                    <MapPin className="h-4 w-4" /> Điểm đến
                   </label>
                   <input
                     value={scheduleForm.arrivalLocation}
@@ -864,7 +1063,7 @@ export default function MerchantDashboard() {
                     onFocus={() => setShowArrivalSuggestions(scheduleForm.arrivalLocation.trim().length >= 1)}
                     onBlur={() => setTimeout(() => setShowArrivalSuggestions(false), 150)}
                     placeholder="Nhập tỉnh/TP"
-                    className="w-full px-3 py-2 border border-border rounded-lg bg-white text-black"
+                    className={formControlClassName}
                   />
                   {showArrivalSuggestions && filteredArrivalOptions.length > 0 && (
                     <div className="absolute z-20 mt-1 max-h-52 w-full overflow-auto rounded-xl border border-border bg-white text-black shadow-lg">
@@ -885,78 +1084,100 @@ export default function MerchantDashboard() {
                   )}
                 </div>
                 <div>
-                  <label className="block text-sm mb-1">Chọn Xe</label>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Xe</label>
                   <select
                     value={scheduleForm.vehicleId}
                     onChange={(e) => handleChange('schedule', 'vehicleId', e.target.value)}
-                    className="w-full px-3 py-2 border border-border rounded-lg"
+                    className={formControlClassName}
                   >
                     <option value="">-- Chọn xe --</option>
                     {buses.filter((b) => (b.status || '').toString().toLowerCase() === 'active').map((bus) => (
                       <option key={bus.id} value={bus.id}>
-                        {bus.plateNumber || bus.plate_number} - {bus.name}
+                        {formatVietnameseLicensePlate(bus.plateNumber || bus.plate_number)} - {bus.name}
                       </option>
                     ))}
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm mb-1">Chọn Tài Xế</label>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Tài xế chính</label>
                   <select
                     value={scheduleForm.driverId}
-                    onChange={(e) => handleChange('schedule', 'driverId', e.target.value)}
-                    className="w-full px-3 py-2 border border-border rounded-lg"
+                    onChange={(e) => updatePrimaryDriver(e.target.value)}
+                    className={formControlClassName}
                   >
                     <option value="">-- Chọn tài xế --</option>
                     {drivers.filter((d) =>
                       (d.status || '').toString().toLowerCase() === 'available' ||
                       Number(d.id) === Number(scheduleForm.driverId)
-                    ).map((driver) => (
-                      <option key={driver.id} value={driver.id}>
+                    ).filter((driver) => !scheduleForm.secondaryDriverIds.includes(Number(driver.id))).map((driver) => (
+                      <option
+                        key={driver.id}
+                        value={driver.id}
+                        disabled={
+                          unavailableDriverIds.has(Number(driver.id)) &&
+                          Number(driver.id) !== Number(scheduleForm.driverId)
+                        }
+                      >
                         {driver.name} ({driver.phone})
+                        {unavailableDriverIds.has(Number(driver.id))
+                          ? ' (đã có lịch trong ngày)'
+                          : ''}
                       </option>
                     ))}
                   </select>
                 </div>
+                <DriverMultiSelect
+                  label="Tài xế phụ (có thể chọn nhiều)"
+                  drivers={drivers.map((driver) => ({
+                    id: Number(driver.id),
+                    name: driver.name,
+                    status: driver.status,
+                  }))}
+                  value={scheduleForm.secondaryDriverIds}
+                  onChange={updateSecondaryDrivers}
+                  unavailableDriverIds={[...unavailableDriverIds]}
+                />
                 <div>
-                  <label className="block text-sm mb-1">Thời gian đi</label>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Thời gian khởi hành</label>
                   <input
                     type="datetime-local"
                     value={scheduleForm.departureTime}
                     min={getMinDepartureDateTime()}
                     onChange={(e) => handleChange('schedule', 'departureTime', e.target.value)}
-                    className="w-full px-3 py-2 border border-border rounded-lg bg-white text-black"
+                    className={formControlClassName}
                   />
                 </div>
                 <div>
-                  <label className="block text-sm mb-1">Thời lượng dự kiến (phút)</label>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Thời lượng dự kiến (giờ)</label>
                   <input
                     type="number"
-                    min="1"
-                    max="2880"
-                    value={scheduleForm.durationMinutes}
-                    onChange={(e) => handleChange('schedule', 'durationMinutes', e.target.value)}
-                    className="w-full px-3 py-2 border border-border rounded-lg"
-                    placeholder="180"
+                    min="0.02"
+                    max="48"
+                    step="0.01"
+                    value={scheduleForm.durationHours}
+                    onChange={(e) => handleChange('schedule', 'durationHours', e.target.value)}
+                    className={formControlClassName}
+                    placeholder="3"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm mb-1">Trạng Thái</label>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Trạng thái</label>
                   <select value={scheduleForm.status} onChange={(e) => handleChange('schedule', 'status', e.target.value)}
-                    className="w-full px-3 py-2 border border-border rounded-lg">
-                    <option value="" style={{ color: "#65676a" }}>--- Chọn trạng thái---</option>
-                    <option value="Scheduled">Đã Lên Lịch</option>
-                    <option value="Departed">Đang Chạy</option>
-                    <option value="Completed">Đã Hoàn Thành</option>
-                    <option value="Cancelled">Đã Hủy</option>
+                    className={formControlClassName}>
+                    <option value="" style={{ color: "#65676a" }}>Chọn trạng thái</option>
+                    <option value="Scheduled">Đã lên lịch</option>
+                    <option value="Departed">Đang chạy</option>
+                    <option value="Completed">Đã hoàn thành</option>
+                    <option value="Cancelled">Đã hủy</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm mb-1">Giá vé (₫)</label>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Giá vé (₫)</label>
                   <input
                     type="number"
                     value={scheduleForm.price}
                     onChange={(e) => handleChange('schedule', 'price', e.target.value)}
-                    className="w-full px-3 py-2 border border-border rounded-lg"
+                    className={formControlClassName}
                     placeholder="450000"
                   />
                 </div>
@@ -1003,7 +1224,7 @@ export default function MerchantDashboard() {
                   } catch (err: any) {
                     console.error('Lỗi xóa dữ liệu:', err);
                     const serverMessage = err?.response?.data?.message || err?.message || 'Xóa thất bại. Vui lòng thử lại.';
-                    alert(serverMessage);
+                    await showAlertDialog(serverMessage, { title: 'Không thể xóa', variant: 'danger' });
                   }
                 }} className="px-4 py-2 rounded-lg bg-red-600 text-white">Xóa</button>
               </div>

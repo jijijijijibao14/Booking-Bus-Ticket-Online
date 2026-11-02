@@ -3,6 +3,7 @@ import { MerchantController } from './merchant.controller.js';
 import { verifyToken, verifyRole } from '../../middlewares/auth.middleware.js';
 import feedbackController from '../feedback/feedback.controller.js';
 import recurringScheduleController from './recurring-schedule.controller.js';
+import { uploadVehicleImage } from './vehicle-image.middleware.js';
 
 const router = Router();
 const controller = new MerchantController();
@@ -31,8 +32,8 @@ router.delete('/drivers/:id', controller.deleteDriver);
 router.post('/schedules', controller.createSchedule);
 router.patch('/schedules/:id', controller.updateSchedule);
 router.delete('/schedules/:id', controller.deleteSchedule);
-router.post('/fleet', controller.createFleet);
-router.patch('/fleet/:id', controller.updateFleet);
+router.post('/fleet', uploadVehicleImage, controller.createFleet);
+router.patch('/fleet/:id', uploadVehicleImage, controller.updateFleet);
 router.delete('/fleet/:id', controller.deleteFleet);
 
 export default router;

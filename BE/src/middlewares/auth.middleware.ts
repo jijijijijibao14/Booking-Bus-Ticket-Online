@@ -26,6 +26,29 @@ export const verifyToken = (req: Request, res: Response, next: NextFunction): vo
   }
 };
 
+export const optionalVerifyToken = (req: Request, res: Response, next: NextFunction): void => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader) {
+    next();
+    return;
+  }
+
+  if (!authHeader.startsWith('Bearer ')) {
+    res.status(403).json({ success: false, message: 'Thông tin xác thực không hợp lệ.' });
+    return;
+  }
+
+  try {
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    (req as any).user = decoded;
+    next();
+  } catch {
+    res.status(401).json({ success: false, message: 'Token không hợp lệ hoặc đã hết hạn.' });
+  }
+};
+
 // Middleware kiểm tra Quyền (Role) - Phục vụ RBAC
 export const verifyRole = (allowedRoles: string[]) => {
   return (req: Request, res: Response, next: NextFunction): void => {

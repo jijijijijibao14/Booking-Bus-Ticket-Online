@@ -62,6 +62,14 @@ export default function BookingHistory() {
     });
   };
 
+  const formatTime = (dateString: string) => {
+    return new Date(dateString).toLocaleTimeString('vi-VN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  };
+
   const getStatusDisplay = (booking: any) => {
     const { display_status, created_at } = booking;
     const firstTicket = booking.tickets?.[0];
@@ -270,8 +278,8 @@ export default function BookingHistory() {
                       <p className="text-sm text-muted-foreground">Mã: <span className="font-mono font-semibold">{booking.booking_code}</span></p>
                     </div>
                     <div>
-                      <p className="font-semibold text-foreground">{formatDate(firstTicket.departure_time)}</p>
-                      <p className="text-sm text-muted-foreground">Ngày đi</p>
+                      <p className="font-semibold text-foreground">                      {formatTime(firstTicket.departure_time)} · {formatDate(firstTicket.departure_time)}</p>
+                                            <p className="text-sm text-muted-foreground">Giờ & ngày đi</p>
                     </div>
                     <div className="hidden md:block">
                       <p className="font-semibold text-foreground">{booking.total_amount.toLocaleString('vi-VN')}₫</p>

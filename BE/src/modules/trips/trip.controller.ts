@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import TripService from './trip.service.js';
+import { findVehicleImagePath } from '../../utils/vehicle-image.util.js';
 
 export class TripController {
   async search(req: Request, res: Response): Promise<void> {
@@ -64,7 +65,8 @@ export class TripController {
 
       const decodedTripId = decodeURIComponent(tripId as string);
 
-      const layout = await TripService.getSeatLayout(decodedTripId);
+      const userId = (req as any).user?.user_id;
+      const layout = await TripService.getSeatLayout(decodedTripId, userId);
       
       res.status(200).json(layout);
     } catch (error: any) {
@@ -72,6 +74,32 @@ export class TripController {
         success: false, 
         message: error.message || 'Không thể lấy sơ đồ ghế.' 
       });
+    }
+  }
+
+  async getVehicleImage(req: Request, res: Response): Promise<void> {
+    const vehicleId = Number(req.params.vehicleId);
+    if (!Number.isSafeInteger(vehicleId) || vehicleId <= 0) {
+      res.status(400).json({ success: false, message: 'ID xe không hợp lệ.' });
+      return;
+    }
+
+    try {
+      const imagePath = await findVehicleImagePath(vehicleId);
+      if (!imagePath) {
+        res.status(404).json({ success: false, message: 'Xe chưa có ảnh.' });
+        return;
+      }
+
+      res.sendFile(imagePath, (error) => {
+        if (error && !res.headersSent) {
+          console.error('Could not serve vehicle image:', error);
+          res.status(500).json({ success: false, message: 'Không thể tải ảnh xe.' });
+        }
+      });
+    } catch (error) {
+      console.error('Could not find vehicle image:', error);
+      res.status(500).json({ success: false, message: 'Không thể tải ảnh xe.' });
     }
   }
 }

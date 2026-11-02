@@ -7,11 +7,13 @@ import {
   Plus,
   ArrowUp,
   ArrowDown,
+  ArrowUpRight,
   Loader2,
 } from 'lucide-react';
 import {
   getWalletTransactions,
 } from '@/api';
+import { toast } from 'sonner';
 
 interface WalletTransaction {
   id: number;
@@ -173,13 +175,23 @@ export default function Wallet({
             <WalletIcon className="w-7 h-7 opacity-80" />
           </div>
 
-          <button
-            type="button"
-            className="mt-7 w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-white/20 hover:bg-white/25 font-semibold"
-          >
-            <Plus className="w-5 h-5" />
-            Nạp tiền
-          </button>
+          <div className="mt-7 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-white/20 py-3 font-semibold hover:bg-white/25"
+            >
+              <Plus className="w-5 h-5" />
+              Nạp tiền
+            </button>
+            <button
+              type="button"
+              onClick={() => toast.info('Chưa liên kết với ngân hàng')}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-white/20 py-3 font-semibold hover:bg-white/25"
+            >
+              <ArrowUpRight className="w-5 h-5" />
+              Rút tiền
+            </button>
+          </div>
         </div>
 
         <h3 className="font-semibold text-lg text-foreground mb-4">

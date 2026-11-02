@@ -2,6 +2,8 @@ import redisClient from '../../config/redis.js';
 import pool from '../../config/database.js';
 import { generateQRCode } from '../../utils/qrcode.util.js';
 import { CustomError } from '../../utils/customError.js';
+import { recordSystemFinancialTransaction } from '../../utils/system-financial.util.js';
+import { normalizeVietnamesePhone } from '../../utils/contact-validation.util.js';
 import { PoolConnection, RowDataPacket } from 'mysql2/promise';
 
 const LOCK_EXPIRE_MS = 10 * 60 * 1000; // Khóa ghế trong 10 phút
@@ -63,6 +65,11 @@ export class BookingService {
     const lockKey = `lock:trip:${tripId}:seat:${seatId}`;
     const result = await redisClient.set(lockKey, userId.toString(), 'PX', LOCK_EXPIRE_MS, 'NX');
     if (result !== 'OK') {
+      const lockedBy = await redisClient.get(lockKey);
+      if (lockedBy === userId.toString()) {
+        return true;
+      }
+
       throw new Error(`Ghế ID ${seatId} vừa có người khác chọn.`);
     }
     return true;
@@ -390,6 +397,11 @@ export class BookingService {
     firstTicketQr: string | null;
   }> {
     const { tripId, seatIds, contactInfo, passengers, totalAmount } = payload;
+    const contactPhone = normalizeVietnamesePhone(contactInfo?.phone);
+    const validatedPassengers = passengers.map((passenger) => ({
+      ...passenger,
+      phone: passenger.phone ? normalizeVietnamesePhone(passenger.phone) : undefined,
+    }));
 
     const paymentMethod = payload.paymentMethod ?? 'Wallet';
     const bookingPaymentStatus = paymentMethod === 'VNPAY' ? 'Pending' : 'Paid';
@@ -447,7 +459,7 @@ export class BookingService {
           userId,
           contactInfo.fullName,
           contactInfo.email,
-          contactInfo.phone,
+          contactPhone,
           bookingCode,
           totalAmount,
           bookingPaymentStatus,
@@ -473,14 +485,14 @@ export class BookingService {
       }
 
       const passengerToSeatId = new Map(
-        passengers.map((passenger, index) => [passenger, seatIds[index]]),
+        validatedPassengers.map((passenger, index) => [passenger, seatIds[index]]),
       );
 
       let firstTicketQr: string | null = null;
 
       // 4. Tạo chi tiết Vé (Tickets) & Mã QR cho từng Hành khách
-      for (let i = 0; i < passengers.length; i++) {
-        const passenger = passengers[i];
+      for (let i = 0; i < validatedPassengers.length; i++) {
+        const passenger = validatedPassengers[i];
         
         const assignedSeatId = passengerToSeatId.get(passenger);
 
@@ -575,6 +587,13 @@ export class BookingService {
               `Thanh toán vé ${result.bookingCode} bằng Ví ViệtGo`,
           },
         );
+        await recordSystemFinancialTransaction(connection, {
+          accountCode: 'SYSTEM_WALLET',
+          transactionType: 'PAYMENT',
+          amount: Number(payload.totalAmount),
+          referenceCode: result.bookingCode,
+          description: `Thanh toán booking ${result.bookingCode} bằng Ví ViệtGo`,
+        });
       }
 
       await connection.commit();
@@ -693,6 +712,13 @@ export class BookingService {
               `Thanh toán vé khứ hồi ${departResult.bookingCode} / ${returnResult.bookingCode} bằng Ví ViệtGo`,
           },
         );
+        await recordSystemFinancialTransaction(connection, {
+          accountCode: 'SYSTEM_WALLET',
+          transactionType: 'PAYMENT',
+          amount: totalRoundtripAmount,
+          referenceCode: `${departResult.bookingCode},${returnResult.bookingCode}`,
+          description: `Thanh toán booking khứ hồi ${departResult.bookingCode} / ${returnResult.bookingCode} bằng Ví ViệtGo`,
+        });
       }
 
       // Chỉ commit khi CẢ HAI chiều đều thành công.

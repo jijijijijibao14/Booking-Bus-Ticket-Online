@@ -48,6 +48,16 @@ export class AuthController {
         return;
       }
 
+      if (user.status === 'Suspended' || user.status === 'Deleted') {
+        res.status(403).json({
+          success: false,
+          message: user.status === 'Deleted'
+            ? 'Tài khoản đã được lưu trữ và không thể đăng nhập.'
+            : 'Tài khoản đã bị khóa. Vui lòng liên hệ quản trị viên.',
+        });
+        return;
+      }
+
       const token = jwt.sign(
         { user_id: user.user_id, email: user.email, role: user.role },
         JWT_SECRET,

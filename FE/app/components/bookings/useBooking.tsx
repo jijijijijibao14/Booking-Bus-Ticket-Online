@@ -170,7 +170,8 @@ export function useBooking() {
           {
             state: {
               ...successNavigationState,
-
+              
+              email: payload.contactInfo.email,
               bookingCode,
 
               qrCode:

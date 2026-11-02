@@ -3,17 +3,15 @@
 -- Cơ sở dữ liệu: booking
 -- Yêu cầu MySQL 8.0.16+ (cột generated và CHECK constraint được thực thi).
 --
--- CẢNH BÁO: Đây là script cài đặt mới. Script sẽ xóa vĩnh viễn database
--- `booking` hiện có và toàn bộ dữ liệu trước khi tạo lại schema.
+-- Script tạo schema cho lần cài đặt mới và KHÔNG xóa database/dữ liệu hiện có.
+-- Nếu database đã có các bảng này, hãy dùng migration thay vì chạy lại từ đầu.
+-- Đã tích hợp schema lịch chạy định kỳ (20261023) và chuẩn hóa/unique
+-- số điện thoại, biển số xe (20261029) cho lần cài đặt mới.
 -- Backend hash mật khẩu bằng scrypt; không lưu mật khẩu dạng rõ tại đây.
 -- =============================================================================
 
 SET NAMES utf8mb4;
-SET FOREIGN_KEY_CHECKS = 0;
-DROP DATABASE IF EXISTS booking;
-SET FOREIGN_KEY_CHECKS = 1;
-
-CREATE DATABASE booking
+CREATE DATABASE IF NOT EXISTS booking
     CHARACTER SET utf8mb4
     COLLATE utf8mb4_unicode_ci;
 
@@ -30,17 +28,26 @@ CREATE TABLE users (
     email VARCHAR(100) NOT NULL,
     full_name VARCHAR(100) NOT NULL,
     phone VARCHAR(15) NULL,
+    phone_normalized VARCHAR(15)
+        GENERATED ALWAYS AS (
+            CASE WHEN phone IS NULL THEN NULL
+            ELSE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone, '+84', '0'), ' ', ''), '-', ''), '.', ''), '(', ''), ')', '')
+            END
+        ) STORED,
     role ENUM('Customer', 'Partner', 'Admin') NOT NULL DEFAULT 'Customer',
     admin_account_guard TINYINT
         GENERATED ALWAYS AS (CASE WHEN role = 'Admin' THEN 1 ELSE NULL END) STORED,
-    status ENUM('Pending Approval', 'Active', 'Rejected') NOT NULL DEFAULT 'Active',
+    status ENUM('Pending Approval', 'Active', 'Rejected', 'Suspended', 'Deleted')
+        NOT NULL DEFAULT 'Active',
     wallet_balance DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id),
     UNIQUE KEY uq_users_username (username),
     UNIQUE KEY uq_users_email (email),
+    UNIQUE KEY uq_users_phone_normalized (phone_normalized),
     UNIQUE KEY uq_users_single_admin (admin_account_guard),
+    KEY idx_users_role_status_created (role, status, created_at),
     CONSTRAINT chk_users_wallet_balance CHECK (wallet_balance >= 0)
 ) ENGINE=InnoDB;
 
@@ -54,6 +61,7 @@ CREATE TABLE partner_profiles (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (partner_id),
     UNIQUE KEY uq_partner_profiles_license (license_number),
+    KEY idx_partner_profiles_withdrawable_balance (withdrawable_balance),
     CONSTRAINT fk_partner_profiles_user
         FOREIGN KEY (partner_id) REFERENCES users(user_id) ON DELETE CASCADE,
     CONSTRAINT chk_partner_commission_rate CHECK (commission_rate BETWEEN 0 AND 100),
@@ -82,10 +90,17 @@ CREATE TABLE vehicles (
     partner_id INT NULL COMMENT 'Đối tác sở hữu phương tiện',
     vehicle_name VARCHAR(100) NOT NULL,
     license_plate VARCHAR(30) NULL,
+    license_plate_normalized VARCHAR(30)
+        GENERATED ALWAYS AS (
+            CASE WHEN license_plate IS NULL THEN NULL
+            ELSE UPPER(REGEXP_REPLACE(license_plate, '[^A-Za-z0-9]', ''))
+            END
+        ) STORED,
     vehicle_type ENUM('Bus') NOT NULL DEFAULT 'Bus',
     total_seats INT NOT NULL,
     status VARCHAR(30) NOT NULL DEFAULT 'active',
     PRIMARY KEY (vehicle_id),
+    UNIQUE KEY uq_vehicles_license_plate_normalized (license_plate_normalized),
     KEY idx_vehicles_partner (partner_id),
     KEY idx_vehicles_type_status (vehicle_type, status),
     CONSTRAINT fk_vehicles_partner
@@ -98,9 +113,14 @@ CREATE TABLE drivers (
     partner_id INT NOT NULL,
     driver_name VARCHAR(100) NOT NULL,
     driver_phone VARCHAR(15) NOT NULL,
+    driver_phone_normalized VARCHAR(15)
+        GENERATED ALWAYS AS (
+            REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(driver_phone, '+84', '0'), ' ', ''), '-', ''), '.', ''), '(', ''), ')', '')
+        ) STORED,
     experience INT NULL,
     status ENUM('available', 'on-trip', 'off-duty') NOT NULL DEFAULT 'available',
     PRIMARY KEY (driver_id),
+    UNIQUE KEY uq_drivers_phone_normalized (driver_phone_normalized),
     KEY idx_drivers_partner_status (partner_id, status),
     CONSTRAINT fk_drivers_partner
         FOREIGN KEY (partner_id) REFERENCES partner_profiles(partner_id) ON DELETE CASCADE,
@@ -164,6 +184,18 @@ CREATE TABLE schedule_templates (
     )
 ) ENGINE=InnoDB;
 
+CREATE TABLE schedule_template_secondary_drivers (
+    schedule_template_id INT NOT NULL,
+    driver_id INT NOT NULL,
+    PRIMARY KEY (schedule_template_id, driver_id),
+    KEY idx_schedule_template_secondary_driver (driver_id),
+    CONSTRAINT fk_schedule_template_secondary_drivers_template
+        FOREIGN KEY (schedule_template_id)
+        REFERENCES schedule_templates(schedule_template_id) ON DELETE CASCADE,
+    CONSTRAINT fk_schedule_template_secondary_drivers_driver
+        FOREIGN KEY (driver_id) REFERENCES drivers(driver_id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
 -- =============================================================================
 -- 3. CHUYẾN XE VÀ GHẾ
 -- =============================================================================
@@ -178,6 +210,7 @@ CREATE TABLE trips (
     estimated_duration_minutes INT NULL,
     actual_departure_time DATETIME NULL,
     actual_arrival_time DATETIME NULL,
+    completed_at DATETIME NULL,
     minimum_turnaround_minutes INT NOT NULL DEFAULT 60,
     transfer_duration_minutes INT NOT NULL DEFAULT 0,
     schedule_template_id INT NULL,
@@ -205,6 +238,17 @@ CREATE TABLE trips (
     CONSTRAINT chk_trips_base_price CHECK (base_price >= 0),
     CONSTRAINT chk_trips_estimated_duration CHECK (estimated_duration_minutes IS NULL OR estimated_duration_minutes > 0),
     CONSTRAINT chk_trips_turnaround_minutes CHECK (minimum_turnaround_minutes >= 60 AND transfer_duration_minutes >= 0)
+) ENGINE=InnoDB;
+
+CREATE TABLE trip_secondary_drivers (
+    trip_id INT NOT NULL,
+    driver_id INT NOT NULL,
+    PRIMARY KEY (trip_id, driver_id),
+    KEY idx_trip_secondary_driver (driver_id),
+    CONSTRAINT fk_trip_secondary_drivers_trip
+        FOREIGN KEY (trip_id) REFERENCES trips(trip_id) ON DELETE CASCADE,
+    CONSTRAINT fk_trip_secondary_drivers_driver
+        FOREIGN KEY (driver_id) REFERENCES drivers(driver_id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
 CREATE TABLE seats (
@@ -273,23 +317,32 @@ CREATE TABLE wallet_transactions (
     user_id INT NOT NULL,
     booking_id INT NULL,
     related_booking_id INT NULL,
-    transaction_type ENUM('PAYMENT', 'REFUND', 'ADJUSTMENT') NOT NULL,
+    transaction_type ENUM('PAYMENT', 'REFUND', 'ADJUSTMENT', 'PARTNER_PAYOUT') NOT NULL,
     amount DECIMAL(12, 2) NOT NULL COMMENT 'Số có dấu: thanh toán âm, hoàn tiền dương',
     balance_before DECIMAL(12, 2) NOT NULL,
     balance_after DECIMAL(12, 2) NOT NULL,
     reference_code VARCHAR(100) NULL,
     description VARCHAR(500) NULL,
+    refund_booking_guard INT
+        GENERATED ALWAYS AS (
+            CASE
+                WHEN transaction_type = 'REFUND' AND booking_id IS NOT NULL
+                THEN booking_id
+                ELSE NULL
+            END
+        ) STORED,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (wallet_transaction_id),
     KEY idx_wallet_transactions_user_created (user_id, created_at),
     KEY idx_wallet_transactions_booking_type (booking_id, transaction_type),
     KEY idx_wallet_transactions_related_booking (related_booking_id),
+    UNIQUE KEY uq_wallet_transactions_single_booking_refund (refund_booking_guard),
     CONSTRAINT fk_wallet_transactions_user
         FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
     CONSTRAINT fk_wallet_transactions_booking
-        FOREIGN KEY (booking_id) REFERENCES bookings(booking_id) ON DELETE SET NULL,
+        FOREIGN KEY (booking_id) REFERENCES bookings(booking_id) ON DELETE RESTRICT,
     CONSTRAINT fk_wallet_transactions_related_booking
-        FOREIGN KEY (related_booking_id) REFERENCES bookings(booking_id) ON DELETE SET NULL,
+        FOREIGN KEY (related_booking_id) REFERENCES bookings(booking_id) ON DELETE RESTRICT,
     CONSTRAINT chk_wallet_balance_before CHECK (balance_before >= 0),
     CONSTRAINT chk_wallet_balance_after CHECK (balance_after >= 0)
 ) ENGINE=InnoDB;
@@ -310,6 +363,7 @@ CREATE TABLE refund_requests (
     PRIMARY KEY (refund_id),
     KEY idx_refund_requests_booking_created (booking_id, created_at),
     KEY idx_refund_requests_partner_status (partner_id, status),
+    KEY idx_refund_requests_status_created (status, created_at),
     CONSTRAINT fk_refund_requests_booking
         FOREIGN KEY (booking_id) REFERENCES bookings(booking_id) ON DELETE CASCADE,
     CONSTRAINT fk_refund_requests_partner
@@ -455,4 +509,111 @@ CREATE TABLE payments (
         FOREIGN KEY (payment_order_id) REFERENCES payment_orders(payment_order_id)
         ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT chk_payments_amount CHECK (amount >= 0)
+) ENGINE=InnoDB;
+
+-- =============================================================================
+-- 8. VẬN HÀNH QUẢN TRỊ VÀ TÀI CHÍNH HỆ THỐNG
+-- =============================================================================
+
+CREATE TABLE partner_payment_accounts (
+    partner_id INT NOT NULL,
+    bank_name VARCHAR(100) NOT NULL,
+    bank_account_name VARCHAR(150) NOT NULL,
+    bank_account_number VARCHAR(50) NOT NULL,
+    branch_name VARCHAR(150) NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (partner_id),
+    CONSTRAINT fk_partner_payment_accounts_partner
+        FOREIGN KEY (partner_id) REFERENCES partner_profiles(partner_id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE system_financial_accounts (
+    account_code VARCHAR(30) NOT NULL,
+    opening_balance DECIMAL(14, 2) NOT NULL DEFAULT 0.00,
+    current_balance DECIMAL(14, 2) NOT NULL DEFAULT 0.00,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (account_code),
+    CONSTRAINT chk_system_financial_account_code
+        CHECK (account_code IN ('SYSTEM_WALLET', 'COMMISSION_WALLET')),
+    CONSTRAINT chk_system_financial_opening_balance CHECK (opening_balance >= 0),
+    CONSTRAINT chk_system_financial_current_balance CHECK (current_balance >= 0)
+) ENGINE=InnoDB;
+
+INSERT INTO system_financial_accounts (account_code, opening_balance, current_balance)
+VALUES
+    ('SYSTEM_WALLET', 0.00, 0.00),
+    ('COMMISSION_WALLET', 0.00, 0.00);
+
+CREATE TABLE system_commission_settings (
+    setting_id TINYINT NOT NULL DEFAULT 1,
+    commission_rate DECIMAL(5, 2) NOT NULL DEFAULT 10.00,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (setting_id),
+    CONSTRAINT chk_system_commission_settings_singleton CHECK (setting_id = 1),
+    CONSTRAINT chk_system_commission_rate CHECK (commission_rate BETWEEN 0 AND 100)
+) ENGINE=InnoDB;
+
+INSERT INTO system_commission_settings (setting_id, commission_rate)
+VALUES (1, 10.00);
+
+CREATE TABLE system_financial_transactions (
+    transaction_id BIGINT NOT NULL AUTO_INCREMENT,
+    account_code VARCHAR(30) NOT NULL,
+    admin_user_id INT NULL,
+    transaction_type ENUM('PAYMENT', 'REFUND', 'COMMISSION', 'ADJUSTMENT', 'PARTNER_PAYOUT')
+        NOT NULL,
+    amount DECIMAL(14, 2) NOT NULL COMMENT 'Signed amount: credits are positive, debits are negative',
+    reference_code VARCHAR(100) NULL,
+    description VARCHAR(500) NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (transaction_id),
+    KEY idx_system_financial_transactions_account_created (account_code, created_at),
+    KEY idx_system_financial_transactions_type_created (transaction_type, created_at),
+    KEY idx_system_financial_transactions_reference (reference_code),
+    CONSTRAINT fk_system_financial_transactions_account
+        FOREIGN KEY (account_code) REFERENCES system_financial_accounts(account_code)
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_system_financial_transactions_admin
+        FOREIGN KEY (admin_user_id) REFERENCES users(user_id) ON DELETE SET NULL,
+    CONSTRAINT chk_system_financial_transaction_amount CHECK (amount <> 0)
+) ENGINE=InnoDB;
+
+CREATE TABLE partner_payouts (
+    payout_id INT NOT NULL AUTO_INCREMENT,
+    partner_id INT NOT NULL,
+    admin_user_id INT NOT NULL,
+    amount DECIMAL(12, 2) NOT NULL,
+    status ENUM('Paid') NOT NULL DEFAULT 'Paid',
+    reference_code VARCHAR(100) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (payout_id),
+    UNIQUE KEY uq_partner_payout_reference (reference_code),
+    KEY idx_partner_payouts_partner_created (partner_id, created_at),
+    CONSTRAINT fk_partner_payouts_partner
+        FOREIGN KEY (partner_id) REFERENCES partner_profiles(partner_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_partner_payouts_admin
+        FOREIGN KEY (admin_user_id) REFERENCES users(user_id) ON DELETE RESTRICT,
+    CONSTRAINT chk_partner_payouts_amount CHECK (amount > 0)
+) ENGINE=InnoDB;
+
+CREATE TABLE partner_trip_settlements (
+    trip_id INT NOT NULL,
+    partner_id INT NOT NULL,
+    gross_amount DECIMAL(14, 2) NOT NULL,
+    commission_rate DECIMAL(5, 2) NOT NULL,
+    commission_amount DECIMAL(14, 2) NOT NULL,
+    partner_amount DECIMAL(14, 2) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (trip_id),
+    KEY idx_partner_trip_settlements_partner_created (partner_id, created_at),
+    CONSTRAINT fk_partner_trip_settlements_trip
+        FOREIGN KEY (trip_id) REFERENCES trips(trip_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_partner_trip_settlements_partner
+        FOREIGN KEY (partner_id) REFERENCES partner_profiles(partner_id) ON DELETE RESTRICT,
+    CONSTRAINT chk_partner_trip_settlement_commission_rate
+        CHECK (commission_rate BETWEEN 0 AND 100),
+    CONSTRAINT chk_partner_trip_settlement_amounts CHECK (
+        gross_amount >= 0 AND commission_amount >= 0 AND partner_amount >= 0
+        AND ROUND(commission_amount + partner_amount, 2) = gross_amount
+    )
 ) ENGINE=InnoDB;

@@ -206,6 +206,9 @@ export default function RegisterPage() {
                 value={formData.phone}
                 onChange={handleChange}
                 placeholder="09xxxxxxxx"
+                pattern="0(?:3[2-9]|5[2689]|7[06789]|8[1-9]|9[0-46-9])[0-9]{7}"
+                title="Nhập số di động Việt Nam hợp lệ gồm 10 chữ số"
+                maxLength={10}
                 className="w-full pl-10 pr-4 py-2.5 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
                 required
               />
@@ -235,7 +238,10 @@ export default function RegisterPage() {
                     name="licenseNumber"
                     value={formData.licenseNumber}
                     onChange={handleChange}
-                    placeholder="GPKD-12345678"
+                    placeholder="GPKD-12345"
+                    pattern="GPKD-[0-9]{5}"
+                    maxLength={10}
+                    title="Định dạng giấy phép kinh doanh: GPKD-xxxxx (xxxxx là 5 chữ số)"
                     className="w-full px-4 py-2.5 border border-blue-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary bg-white"
                     required
                   />

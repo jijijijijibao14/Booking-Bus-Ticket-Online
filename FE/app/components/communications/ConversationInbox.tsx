@@ -1,18 +1,29 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2, MessageCircle, Send } from 'lucide-react';
+import { ArrowLeft, Loader2, Send } from 'lucide-react';
 import {
+  getChatPartners,
   getConversationMessages,
   getConversations,
   openConversation,
   sendConversationMessage,
 } from '@/api';
+import {
+  getUnreadConversationCount,
+  isConversationUnread,
+  markConversationRead,
+} from '@/utils/chat-unread';
+import UserAvatar from './UserAvatar';
 
 interface Conversation {
   conversationId: number;
   conversationType: string;
+  partnerId: number | null;
+  customerId: number | null;
   customerName: string | null;
   partnerName: string | null;
   lastMessage: string | null;
+  lastMessageId: number | null;
+  lastMessageSenderRole: string | null;
 }
 
 interface ChatMessage {
@@ -25,11 +36,20 @@ interface ChatMessage {
 }
 
 interface ConversationInboxProps {
-  role: 'Partner' | 'Admin';
+  role: 'Customer' | 'Partner' | 'Admin';
+  onUnreadCountChange?: (count: number) => void;
+  visible?: boolean;
+  compact?: boolean;
 }
 
-export default function ConversationInbox({ role }: ConversationInboxProps) {
+export default function ConversationInbox({
+  role,
+  onUnreadCountChange,
+  visible = true,
+  compact = false,
+}: ConversationInboxProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [chatPartners, setChatPartners] = useState<{ partnerId: number; brandName: string }[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [messageText, setMessageText] = useState('');
@@ -38,19 +58,27 @@ export default function ConversationInbox({ role }: ConversationInboxProps) {
 
   const loadConversations = useCallback(async () => {
     const response = await getConversations();
-    setConversations(response.data.data);
-    return response.data.data as Conversation[];
-  }, []);
+    const data = response.data.data as Conversation[];
+    const selectedConversation = data.find((conversation) => conversation.conversationId === selectedId);
+    if (visible && selectedConversation?.lastMessageId) markConversationRead(selectedConversation, role);
+    setConversations(data);
+    onUnreadCountChange?.(getUnreadConversationCount(data, role));
+    return data;
+  }, [onUnreadCountChange, role, selectedId, visible]);
+
+  useEffect(() => {
+    if (role !== 'Customer') return;
+    getChatPartners()
+      .then((response) => setChatPartners(response.data.data))
+      .catch((requestError) => {
+        console.error('Could not load chat partner list:', requestError);
+        setError(requestError.response?.data?.message || 'Không thể tải danh sách nhà xe.');
+      });
+  }, [role]);
 
   useEffect(() => {
     let mounted = true;
-    const load = () => getConversations()
-      .then((response) => {
-        if (!mounted) return;
-        const data = response.data.data as Conversation[];
-        setConversations(data);
-        setSelectedId((currentId) => currentId ?? data[0]?.conversationId ?? null);
-      })
+    const load = () => loadConversations()
       .catch((requestError) => {
         console.error('Could not load conversation inbox:', requestError);
         if (mounted) setError(requestError.response?.data?.message || 'Không thể tải tin nhắn.');
@@ -64,10 +92,17 @@ export default function ConversationInbox({ role }: ConversationInboxProps) {
       mounted = false;
       window.clearInterval(refreshInterval);
     };
-  }, []);
+  }, [loadConversations]);
 
   useEffect(() => {
-    if (!selectedId) {
+    if (!visible && selectedId) {
+      const selectedConversation = conversations.find((item) => item.conversationId === selectedId);
+      if (compact || !selectedConversation?.lastMessageId) setSelectedId(null);
+    }
+  }, [compact, conversations, selectedId, visible]);
+
+  useEffect(() => {
+    if (!selectedId || !visible) {
       setMessages([]);
       return;
     }
@@ -87,20 +122,24 @@ export default function ConversationInbox({ role }: ConversationInboxProps) {
       mounted = false;
       window.clearInterval(refreshInterval);
     };
-  }, [selectedId]);
+  }, [selectedId, visible]);
 
-  const startSupportConversation = async () => {
+  const startConversation = async (type: 'support' | 'partner', partnerId?: number) => {
     try {
       setError('');
-      const response = await openConversation({ type: 'support' });
-      const data = await loadConversations();
+      const response = await openConversation({ type, partnerId });
       const id = Number(response.data.data.conversationId);
+      const [conversationsResponse, messagesResponse] = await Promise.all([
+        getConversations(),
+        getConversationMessages(id),
+      ]);
+      const data = conversationsResponse.data.data as Conversation[];
+      setConversations(data);
       setSelectedId(id);
-      if (!data.some((conversation) => conversation.conversationId === id)) {
-        await loadConversations();
-      }
+      setMessages(messagesResponse.data.data);
+      onUnreadCountChange?.(getUnreadConversationCount(data, role));
     } catch (requestError: any) {
-      setError(requestError.response?.data?.message || 'Không thể mở hội thoại hỗ trợ.');
+      setError(requestError.response?.data?.message || 'Không thể mở hội thoại.');
     }
   };
 
@@ -121,34 +160,93 @@ export default function ConversationInbox({ role }: ConversationInboxProps) {
   };
 
   const selectedConversation = conversations.find((item) => item.conversationId === selectedId);
-  const title = role === 'Partner'
-    ? selectedConversation?.conversationType === 'PARTNER_SUPPORT' ? 'Hỗ trợ VIỆTGO' : selectedConversation?.customerName
-    : selectedConversation?.conversationType === 'CUSTOMER_SUPPORT' ? selectedConversation?.customerName : selectedConversation?.partnerName;
+  const visibleConversations = conversations.filter((conversation) =>
+    Number(conversation.lastMessageId) > 0 || conversation.conversationId === selectedId,
+  );
+  const getConversationTitle = (conversation: Conversation) => {
+    if (conversation.conversationType === 'CUSTOMER_SUPPORT' || conversation.conversationType === 'PARTNER_SUPPORT') {
+      if (role === 'Customer' && conversation.conversationType === 'CUSTOMER_SUPPORT') return 'Hỗ trợ VIỆTGO';
+      if (role === 'Partner' && conversation.conversationType === 'PARTNER_SUPPORT') return 'Hỗ trợ VIỆTGO';
+    }
+    if (role === 'Partner') return conversation.customerName;
+    if (role === 'Customer') return conversation.partnerName;
+    return conversation.conversationType === 'CUSTOMER_SUPPORT'
+      ? conversation.customerName
+      : conversation.partnerName;
+  };
+  const title = selectedConversation ? getConversationTitle(selectedConversation) : null;
+  const isSupportConversation = (conversation: Conversation) =>
+    getConversationTitle(conversation) === 'Hỗ trợ VIỆTGO';
+  const getCounterpartId = (conversation: Conversation) => {
+    if (role === 'Partner') return conversation.customerId;
+    if (role === 'Customer') return conversation.partnerId;
+    return conversation.conversationType === 'CUSTOMER_SUPPORT' ? conversation.customerId : conversation.partnerId;
+  };
 
   return (
-    <section className="rounded-3xl border border-blue-100 bg-white shadow-sm">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-blue-50 p-5">
+    <section
+      hidden={!visible}
+      className={compact
+        ? 'flex h-full flex-col overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-2xl'
+        : 'rounded-3xl border border-blue-100 bg-white shadow-sm'}
+    >
+      <header className={`flex flex-wrap items-center justify-between gap-2 border-b border-blue-50 ${compact ? 'p-3' : 'gap-3 p-5'}`}>
         <div>
-          <h2 className="text-xl font-bold text-slate-900">Tin nhắn</h2>
-          <p className="text-sm text-slate-500">{role === 'Admin' ? 'Hội thoại hỗ trợ cần phản hồi' : 'Trò chuyện với khách hàng và VIỆTGO'}</p>
+          <h2 className={`${compact ? 'text-base' : 'text-xl'} font-bold text-slate-900`}>{role === 'Customer' ? 'Trung tâm trò chuyện' : 'Tin nhắn'}</h2>
+          <p className={`${compact ? 'text-xs' : 'text-sm'} text-slate-500`}>
+            {role === 'Admin'
+              ? 'Hội thoại hỗ trợ cần phản hồi'
+              : role === 'Customer'
+                ? 'Hội thoại của bạn với nhà xe và VIỆTGO'
+                : 'Trò chuyện với khách hàng và VIỆTGO'}
+          </p>
         </div>
-        {role === 'Partner' && (
-          <button type="button" onClick={startSupportConversation} className="rounded-xl border border-blue-200 px-4 py-2 text-sm font-semibold text-blue-800 hover:bg-blue-50">
-            Nhắn VIỆTGO
-          </button>
+        {(role === 'Partner' || role === 'Customer') && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => void startConversation('support')}
+              className={`rounded-lg border border-blue-200 ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} font-semibold text-blue-800 hover:bg-blue-50`}
+            >
+              Nhắn VIỆTGO
+            </button>
+            {role === 'Customer' && (
+              <select
+                aria-label="Chọn nhà xe để nhắn tin"
+                defaultValue=""
+                onChange={(event) => {
+                  const partnerId = Number(event.target.value);
+                  if (partnerId > 0) void startConversation('partner', partnerId);
+                  event.target.value = '';
+                }}
+                className={`min-w-0 max-w-48 rounded-lg border border-blue-100 bg-white px-2 ${compact ? 'py-1.5 text-xs' : 'py-2 text-sm'} text-blue-900`}
+              >
+                <option value="">Nhắn nhà xe</option>
+                {chatPartners.map((partner) => (
+                  <option key={partner.partnerId} value={partner.partnerId}>{partner.brandName}</option>
+                ))}
+              </select>
+            )}
+          </div>
         )}
       </header>
-      <div className="grid min-h-[460px] md:grid-cols-[280px_1fr]">
-        <aside className="border-b border-blue-50 md:border-b-0 md:border-r">
+      <div className={compact
+        ? 'grid min-h-0 flex-1 grid-rows-1'
+        : 'grid min-h-[460px] md:grid-cols-[minmax(0,2fr)_minmax(0,8fr)]'}>
+        <aside className={`min-h-0 overflow-y-auto border-b border-blue-50 bg-slate-50/70 md:border-b-0 md:border-r ${
+          compact
+            ? selectedId ? 'hidden' : 'block'
+            : selectedId ? 'hidden md:block' : 'block'
+        }`}>
           {loading ? (
             <Loader2 className="mx-auto mt-8 h-5 w-5 animate-spin text-blue-700" />
-          ) : conversations.length === 0 ? (
-            <p className="p-5 text-sm text-slate-500">Chưa có hội thoại.</p>
+          ) : visibleConversations.length === 0 ? (
+            <p className="p-5 text-sm text-slate-500">
+              {role === 'Admin' ? 'Chưa có hội thoại cần phản hồi.' : 'Chưa có tin nhắn. Hãy bắt đầu cuộc trò chuyện mới.'}
+            </p>
           ) : (
-            conversations.map((conversation) => {
-              const itemTitle = role === 'Partner'
-                ? conversation.conversationType === 'PARTNER_SUPPORT' ? 'Hỗ trợ VIỆTGO' : conversation.customerName
-                : conversation.conversationType === 'CUSTOMER_SUPPORT' ? conversation.customerName : conversation.partnerName;
+            visibleConversations.map((conversation) => {
+              const itemTitle = getConversationTitle(conversation);
               return (
                 <button
                   key={conversation.conversationId}
@@ -156,26 +254,87 @@ export default function ConversationInbox({ role }: ConversationInboxProps) {
                   onClick={() => {
                     setError('');
                     setSelectedId(conversation.conversationId);
+                    markConversationRead(conversation, role);
+                    onUnreadCountChange?.(
+                      getUnreadConversationCount(
+                        conversations.filter((item) => item.conversationId !== conversation.conversationId),
+                        role,
+                      ),
+                    );
                   }}
-                  className={`block w-full border-b border-blue-50 p-4 text-left transition ${selectedId === conversation.conversationId ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
+                  className={`m-2 flex w-[calc(100%-1rem)] items-center gap-3 rounded-xl border p-3 text-left transition ${
+                    isConversationUnread(conversation, role)
+                      ? 'border-blue-200 bg-blue-50/80 shadow-sm'
+                      : selectedId === conversation.conversationId
+                        ? 'border-blue-200 bg-white shadow-sm'
+                        : 'border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50/50'
+                  }`}
                 >
-                  <p className="truncate font-semibold text-slate-800">{itemTitle || 'Cuộc trò chuyện'}</p>
-                  <p className="mt-1 truncate text-xs text-slate-500">{conversation.lastMessage || 'Bắt đầu trò chuyện'}</p>
+                  <UserAvatar
+                    userId={isSupportConversation(conversation) ? null : getCounterpartId(conversation)}
+                    name={itemTitle}
+                    className={conversation.conversationType.includes('SUPPORT')
+                      ? 'h-11 w-11 bg-violet-100 text-violet-700'
+                      : 'h-11 w-11 bg-blue-100 text-blue-700'}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex min-w-0 items-center justify-between gap-2">
+                      <span className={`truncate text-sm ${isConversationUnread(conversation, role) ? 'font-bold text-slate-900' : 'font-semibold text-slate-800'}`}>
+                        {itemTitle || 'Cuộc trò chuyện'}
+                      </span>
+                      {isConversationUnread(conversation, role) && (
+                        <span className="shrink-0 rounded-full bg-blue-700 px-2 py-0.5 text-[10px] font-semibold text-white">
+                          Mới
+                        </span>
+                      )}
+                    </span>
+                    <span className={`mt-1 block truncate text-xs ${
+                      isConversationUnread(conversation, role) ? 'font-medium text-slate-700' : 'text-slate-500'
+                    }`}>
+                      {conversation.lastMessage
+                        ? `${conversation.lastMessageSenderRole === role ? 'Bạn: ' : ''}${conversation.lastMessage}`
+                        : 'Bắt đầu trò chuyện'}
+                    </span>
+                  </span>
                 </button>
               );
             })
           )}
         </aside>
-        <div className="flex min-h-[400px] flex-col">
-          <div className="border-b border-blue-50 px-5 py-4 font-semibold text-slate-800">{title || 'Chọn hội thoại'}</div>
-          <div className="flex-1 space-y-3 overflow-y-auto bg-slate-50 p-4">
+        <div className={`min-h-0 flex-col ${
+          compact
+            ? selectedId ? 'flex' : 'hidden'
+            : selectedId ? 'flex' : 'hidden md:flex'
+        }`}>
+          <div className={`flex min-w-0 items-center gap-2 border-b border-blue-50 ${compact ? 'px-3 py-2.5 text-sm' : 'px-5 py-4'} font-semibold text-slate-800`}>
+            {selectedId && (
+              <button
+                type="button"
+                onClick={() => {
+                  setError('');
+                  setSelectedId(null);
+                }}
+                aria-label="Quay lại danh sách hội thoại"
+                className={`shrink-0 rounded-full p-1.5 text-slate-600 hover:bg-blue-50 hover:text-blue-800 ${compact ? '' : 'md:hidden'}`}
+              >
+                <ArrowLeft className="h-5 w-5" />
+              </button>
+            )}
+            <span className="truncate">{title || 'Chọn hội thoại'}</span>
+          </div>
+          <div className={`min-h-0 flex-1 space-y-3 overflow-y-auto bg-slate-50 ${compact ? 'p-3' : 'p-4'}`}>
             {messages.map((message) => {
               const ownMessage = message.senderRole === role;
               return (
-                <div key={message.messageId} className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${ownMessage ? 'ml-auto bg-blue-700 text-white' : 'bg-white text-slate-700 shadow-sm'}`}>
-                  {!ownMessage && <p className="mb-1 text-xs font-semibold text-blue-700">{message.senderName}</p>}
-                  <p className="whitespace-pre-wrap break-words">{message.messageText}</p>
-                  <time className="mt-1 block text-right text-[10px] opacity-70">{new Date(message.createdAt).toLocaleString('vi-VN')}</time>
+                <div key={message.messageId} className={`flex items-end gap-2 ${ownMessage ? 'justify-end' : ''}`}>
+                  {!ownMessage && (
+                    <UserAvatar userId={message.senderId} name={message.senderName} className="h-8 w-8 bg-blue-100 text-xs text-blue-700" />
+                  )}
+                  <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${ownMessage ? 'bg-blue-700 text-white' : 'bg-white text-slate-700 shadow-sm'}`}>
+                    {!ownMessage && <p className="mb-1 text-xs font-semibold text-blue-700">{message.senderName}</p>}
+                    <p className="whitespace-pre-wrap break-words">{message.messageText}</p>
+                    <time className="mt-1 block text-right text-[10px] opacity-70">{new Date(message.createdAt).toLocaleString('vi-VN')}</time>
+                  </div>
                 </div>
               );
             })}

@@ -5,6 +5,7 @@ import { User, Lock, ArrowLeft } from 'lucide-react';
 import { login } from '@/api';
 import { GoogleLogin } from '@react-oauth/google';
 import { toast } from 'sonner'; // Dùng luôn sonner để thông báo cho đồng bộ
+import { showAlertDialog } from '@/utils/modal-dialog';
 export default function LoginPage() {
   const navigate = useNavigate();
   const [formData, setFormData] = useState({
@@ -50,7 +51,7 @@ const processLoginResponse = (data: any, route?: string) => {
   }
 
   // Điều hướng theo vai trò
-  const targetRoute = route || (user.role === 'Admin' ? '/admin' : '/');
+  const targetRoute = user.role === 'Admin' ? '/' : route || '/';
 
   navigate(targetRoute);
 };
@@ -96,7 +97,7 @@ const processLoginResponse = (data: any, route?: string) => {
       }
     } catch (error: any) {
       const message = error.response?.data?.message || 'Đăng nhập thất bại. Vui lòng thử lại!';
-      alert(message);
+      void showAlertDialog(message, { title: 'Đăng nhập thất bại', variant: 'danger' });
     }
   };
 
@@ -109,7 +110,7 @@ const processLoginResponse = (data: any, route?: string) => {
       }
     } catch (error: any) {
       const message = error.response?.data?.message || 'Đăng nhập demo thất bại. Vui lòng kiểm tra backend và seed data.';
-      alert(message);
+      void showAlertDialog(message, { title: 'Đăng nhập demo thất bại', variant: 'danger' });
     }
   };
 
@@ -254,7 +255,6 @@ const processLoginResponse = (data: any, route?: string) => {
               onError={() => {
                 toast.error('Đăng nhập bằng Google thất bại');
               }}
-              useOneTap
             />
           </div>
 

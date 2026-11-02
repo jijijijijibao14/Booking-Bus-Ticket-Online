@@ -1,5 +1,9 @@
 import pool from '../../config/database.js';
 import { hashPassword, verifyPassword } from '../auth/password.util.js';
+import {
+  assertPhoneAvailable,
+  normalizeVietnamesePhone,
+} from '../../utils/contact-validation.util.js';
 
 class UserService {
   async getProfile(userId: number) {
@@ -102,6 +106,8 @@ class UserService {
         'Họ tên và số điện thoại không được để trống.',
       );
     }
+    const normalizedPhone = normalizeVietnamesePhone(phone);
+    await assertPhoneAvailable(pool, normalizedPhone, { userId });
 
     // 1. KIỂM TRA MẬT KHẨU CŨ NẾU CÓ YÊU CẦU ĐỔI MẬT KHẨU
     if (new_password) {
@@ -141,7 +147,7 @@ class UserService {
 
     const params: any[] = [
       full_name,
-      phone,
+      normalizedPhone,
     ];
 
     if (new_password) {

@@ -43,7 +43,7 @@ export default function MerchantOverview({ stats, schedules, loading, error }: P
           </div>
           <h3 className="text-muted-foreground text-sm mb-1">Vé Đã Bán</h3>
           <p className="text-3xl font-bold text-foreground">{stats.ticketsSold || 0}</p>
-          <p className="text-xs text-muted-foreground mt-2">Tháng 6/2026</p>
+          <p className="text-xs text-muted-foreground mt-2">Trong tháng này</p>
         </div>
 
         <div className="bg-white rounded-xl p-6 border border-border">
@@ -81,7 +81,8 @@ export default function MerchantOverview({ stats, schedules, loading, error }: P
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-sm text-muted-foreground">
                   <div>Xe: {schedule.bus}</div>
-                  <div>Tài xế: {schedule.driver?.split(' ').pop()}</div>
+                  <div>Tài xế chính: {schedule.driver?.split(' ').pop() || 'Chưa có'}</div>
+                  {schedule.secondaryDriverNames && <div className="col-span-2">Tài xế phụ: {schedule.secondaryDriverNames}</div>}
                   <div>Đã đặt: {schedule.seats}</div>
                   <div>Giá: {schedule.price.toLocaleString()}₫</div>
                 </div>

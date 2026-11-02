@@ -1,5 +1,15 @@
 import { Request, Response } from 'express';
 import merchantService from './merchant.service.js';
+import {
+  removeVehicleImage,
+  saveVehicleImage,
+  validateVehicleImage,
+} from '../../utils/vehicle-image.util.js';
+
+function getValidationStatus(error: unknown): number {
+  const message = error instanceof Error ? error.message : '';
+  return /không hợp lệ|định dạng|Số điện thoại|Biển số xe/.test(message) ? 400 : 500;
+}
 
 export class MerchantController {
   getProfile = async (req: Request, res: Response): Promise<Response> => {
@@ -21,7 +31,7 @@ export class MerchantController {
       const updated = await merchantService.updateMerchantProfile(partnerId, { full_name, email, phone, brand_name });
       return res.status(200).json({ success: true, data: updated });
     } catch (err: any) {
-      return res.status(500).json({ success: false, message: err.message });
+      return res.status(getValidationStatus(err)).json({ success: false, message: err.message });
     }
   };
 
@@ -67,7 +77,7 @@ export class MerchantController {
         const created = await merchantService.createMerchantDriver(partnerId, { driver_name, driver_phone, experience, status });
         return res.status(201).json({ success: true, data: created });
     } catch (err: any) {
-      return res.status(500).json({ success: false, message: err.message });
+      return res.status(getValidationStatus(err)).json({ success: false, message: err.message });
     }
  };
   updateDriver = async (req: Request, res: Response): Promise<Response> => {
@@ -80,7 +90,7 @@ export class MerchantController {
         const updated = await merchantService.updateMerchantDriver(partnerId, driverId, { driver_name, driver_phone, experience, status });
         return res.status(200).json({ success: true, data: updated });
     } catch (err: any) {
-      return res.status(500).json({ success: false, message: err.message });
+      return res.status(getValidationStatus(err)).json({ success: false, message: err.message });
     }   
 };
 
@@ -118,6 +128,7 @@ export class MerchantController {
         arrival_location,
         vehicle_id,
         driver_id,
+        secondary_driver_ids,
         departure_time,
         arrival_time,
         estimated_duration_minutes,
@@ -146,6 +157,7 @@ export class MerchantController {
         arrival_location,
         vehicle_id: Number(vehicle_id),
         driver_id: driver_id ? Number(driver_id) : undefined,
+        secondary_driver_ids,
         departure_time,
         arrival_time,
         estimated_duration_minutes: estimatedDurationMinutes,
@@ -168,6 +180,7 @@ export class MerchantController {
         arrival_location,
         vehicle_id,
         driver_id,
+        secondary_driver_ids,
         departure_time,
         arrival_time,
         estimated_duration_minutes,
@@ -188,6 +201,7 @@ export class MerchantController {
         arrival_location,
         vehicle_id: vehicle_id ? Number(vehicle_id) : undefined,
         driver_id: driver_id ? Number(driver_id) : undefined,
+        secondary_driver_ids,
         departure_time,
         arrival_time,
         estimated_duration_minutes: estimatedDurationMinutes,
@@ -215,15 +229,35 @@ export class MerchantController {
   };
 
   createFleet = async (req: Request, res: Response): Promise<Response> => {
+    let createdVehicleId: number | undefined;
     try {
       const partnerId = (req as any).user.user_id;
       if (!partnerId) return res.status(400).json({ success: false, message: 'Không tìm thấy ID đối tác.' });
       const { vehicle_name, license_plate, vehicle_type, total_seats, status } = req.body;
       if (!license_plate || !vehicle_name) return res.status(400).json({ success: false, message: 'Thiếu thông tin xe.' });
-      const created = await merchantService.createMerchantVehicle(partnerId, { vehicle_name, license_plate, vehicle_type, total_seats: Number(total_seats || 0), status });
+      const created = await merchantService.createMerchantVehicle(partnerId, {
+        vehicle_name,
+        license_plate,
+        vehicle_type,
+        total_seats: Number(total_seats || 0),
+        status,
+      });
+      createdVehicleId = Number(created.insertId);
+      if (req.file) await saveVehicleImage(req.file, createdVehicleId);
       return res.status(201).json({ success: true, data: created });
     } catch (err: any) {
-      return res.status(500).json({ success: false, message: err.message });
+      if (createdVehicleId) {
+        await merchantService.deleteMerchantVehicle(
+          Number((req as any).user.user_id),
+          createdVehicleId,
+        ).catch((cleanupError) => {
+          console.error('Could not remove vehicle after image upload failed:', cleanupError);
+        });
+        await removeVehicleImage(createdVehicleId).catch((cleanupError) => {
+          console.error('Could not remove unused vehicle image:', cleanupError);
+        });
+      }
+      return res.status(getValidationStatus(err)).json({ success: false, message: err.message });
     }
   };
 
@@ -234,10 +268,21 @@ export class MerchantController {
       const vehicleId = Number(req.params.id);
       if (!vehicleId) return res.status(400).json({ success: false, message: 'ID xe không hợp lệ.' });
       const { vehicle_name, license_plate, vehicle_type, total_seats, status } = req.body;
-      const updated = await merchantService.updateMerchantVehicle(partnerId, vehicleId, { vehicle_name, license_plate, vehicle_type, total_seats: total_seats ? Number(total_seats) : undefined, status });
+      if (req.file) validateVehicleImage(req.file);
+      const updated = await merchantService.updateMerchantVehicle(partnerId, vehicleId, {
+        vehicle_name,
+        license_plate,
+        vehicle_type,
+        total_seats: total_seats ? Number(total_seats) : undefined,
+        status,
+      });
+      if (!updated.exists) {
+        return res.status(404).json({ success: false, message: 'Xe không tồn tại hoặc không thuộc đối tác.' });
+      }
+      if (req.file) await saveVehicleImage(req.file, vehicleId);
       return res.status(200).json({ success: true, data: updated });
     } catch (err: any) {
-      return res.status(500).json({ success: false, message: err.message });
+      return res.status(getValidationStatus(err)).json({ success: false, message: err.message });
     }
   };
 
@@ -249,6 +294,11 @@ export class MerchantController {
       if (!vehicleId) return res.status(400).json({ success: false, message: 'ID xe không hợp lệ.' });
       const deleted = await merchantService.deleteMerchantVehicle(partnerId, vehicleId);
       if ((deleted as any).affectedRows === 0) return res.status(404).json({ success: false, message: 'Xe không tồn tại hoặc không thuộc đối tác.' });
+      if ((deleted as any).vehicleId) {
+        await removeVehicleImage((deleted as any).vehicleId).catch((cleanupError) => {
+          console.error('Could not remove deleted vehicle image:', cleanupError);
+        });
+      }
       return res.status(200).json({ success: true, data: deleted });
     } catch (err: any) {
       return res.status(500).json({ success: false, message: err.message });

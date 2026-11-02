@@ -7,6 +7,7 @@ import {
   createOccurrences,
   detectOccurrenceConflicts,
   isFutureVietnamDateTime,
+  propagateCycleConflicts,
   RecurringScheduleInput,
   ScheduledOccurrence,
   validateRecurringInput,
@@ -26,6 +27,7 @@ interface ExistingTrip extends RowDataPacket {
   arrivalTime: string;
   vehicleId: number;
   driverId: number | null;
+  secondaryDriverIds: string | null;
   minimumTurnaroundMinutes: number;
   transferDurationMinutes: number;
 }
@@ -137,7 +139,7 @@ class RecurringScheduleService {
     partnerId: number,
     input: RecurringScheduleInput,
     connection?: PoolConnection,
-  ): Promise<{ vehicle: RowDataPacket; driver: RowDataPacket | null }> {
+  ): Promise<{ vehicle: RowDataPacket; driver: RowDataPacket | null; secondaryDrivers: RowDataPacket[] }> {
     const runner = connection || pool;
     const [vehicleRows] = await runner.query<RowDataPacket[]>(
       `SELECT vehicle_id, vehicle_type, total_seats, status
@@ -165,43 +167,115 @@ class RecurringScheduleService {
         throw new Error('Tài xế không tồn tại, không thuộc nhà xe hoặc không khả dụng.');
       }
     }
-    return { vehicle, driver };
+    const secondaryDriverIds = input.secondaryDriverIds ?? [];
+    const secondaryDrivers = secondaryDriverIds.length > 0
+      ? (await runner.query<RowDataPacket[]>(
+        `SELECT driver_id, status
+         FROM drivers
+         WHERE driver_id IN (?) AND partner_id = ?
+         ORDER BY driver_id${connection ? ' FOR UPDATE' : ''}`,
+        [secondaryDriverIds, partnerId],
+      ))[0]
+      : [];
+    if (
+      secondaryDrivers.length !== secondaryDriverIds.length ||
+      secondaryDrivers.some((secondaryDriver) => String(secondaryDriver.status) !== 'available')
+    ) {
+      throw new Error('Một hoặc nhiều tài xế phụ không tồn tại, không thuộc nhà xe hoặc không khả dụng.');
+    }
+    return { vehicle, driver, secondaryDrivers };
   }
 
   private async findExistingTrips(
     vehicleId: number,
-    driverId: number | null,
+    driverIds: number[],
     occurrences: ScheduledOccurrence[],
     connection: PoolConnection | typeof pool,
   ): Promise<ExistingTrip[]> {
     const firstDeparture = occurrences[0].departureTime;
     const lastDeparture = occurrences[occurrences.length - 1].departureTime;
+    const driverIdsForQuery = driverIds.length > 0 ? driverIds : [0];
     const [rows] = await connection.query<ExistingTrip[]>(
       `SELECT
          DATE_FORMAT(tr.departure_time, '%Y-%m-%d %H:%i:%s') AS departureTime,
          DATE_FORMAT(tr.arrival_time, '%Y-%m-%d %H:%i:%s') AS arrivalTime,
-        tr.vehicle_id AS vehicleId,
-        tr.driver_id AS driverId,
+         tr.vehicle_id AS vehicleId,
+         tr.driver_id AS driverId,
+         (SELECT GROUP_CONCAT(tsd.driver_id ORDER BY tsd.driver_id)
+          FROM trip_secondary_drivers tsd
+          WHERE tsd.trip_id = tr.trip_id) AS secondaryDriverIds,
          tr.minimum_turnaround_minutes AS minimumTurnaroundMinutes,
          tr.transfer_duration_minutes AS transferDurationMinutes
        FROM trips tr
        WHERE tr.status <> 'Cancelled'
-         AND (tr.vehicle_id = ? OR (? IS NOT NULL AND tr.driver_id = ?))
+         AND (tr.vehicle_id = ? OR (
+           ? = 1 AND (
+             tr.driver_id IN (?)
+             OR EXISTS (
+               SELECT 1 FROM trip_secondary_drivers tsd
+               WHERE tsd.trip_id = tr.trip_id AND tsd.driver_id IN (?)
+             )
+           )
+         ))
          AND tr.arrival_time >= DATE_SUB(?, INTERVAL 3 DAY)
          AND tr.departure_time <= DATE_ADD(?, INTERVAL 3 DAY)
        ORDER BY tr.departure_time`,
-      [vehicleId, driverId, driverId, firstDeparture, lastDeparture],
+      [
+        vehicleId,
+        driverIds.length > 0 ? 1 : 0,
+        driverIdsForQuery,
+        driverIdsForQuery,
+        firstDeparture,
+        lastDeparture,
+      ],
     );
     return rows;
+  }
+
+  private async assertDriversNotReservedByTrips(
+    connection: PoolConnection | typeof pool,
+    partnerId: number,
+    driverIds: number[],
+    startDate: string,
+    endDate: string,
+    lockRows = false,
+  ) {
+    if (driverIds.length === 0) return;
+    const [rows] = await connection.query<RowDataPacket[]>(
+      `SELECT tr.trip_id
+       FROM trips tr
+       JOIN vehicles v ON v.vehicle_id = tr.vehicle_id
+       WHERE v.partner_id = ?
+         AND tr.status <> 'Cancelled'
+         AND DATE(tr.departure_time) <= ?
+         AND DATE(tr.arrival_time) >= ?
+         AND (
+           tr.driver_id IN (?)
+           OR EXISTS (
+             SELECT 1
+             FROM trip_secondary_drivers tsd
+             WHERE tsd.trip_id = tr.trip_id
+               AND tsd.driver_id IN (?)
+           )
+         )
+       LIMIT 1
+       ${lockRows ? 'FOR UPDATE' : ''}`,
+      [partnerId, endDate, startDate, driverIds, driverIds],
+    );
+    if (rows.length > 0) {
+      throw new Error('Một hoặc nhiều tài xế đã được phân công cho lịch chạy trong khoảng ngày đã chọn.');
+    }
   }
 
   private async getRouteId(
     connection: PoolConnection,
     input: RecurringScheduleInput,
     vehicleType: string,
+    departureLocation: string,
+    arrivalLocation: string,
   ): Promise<number> {
-    const origin = normalizeLocation(input.departureLocation);
-    const destination = normalizeLocation(input.arrivalLocation);
+    const origin = normalizeLocation(departureLocation);
+    const destination = normalizeLocation(arrivalLocation);
     const [routeRows] = await connection.query<RowDataPacket[]>(
       `SELECT route_id
        FROM routes
@@ -223,19 +297,37 @@ class RecurringScheduleService {
     await this.validateOwnership(partnerId, input);
     const duration = await this.resolveDuration(input);
     const occurrences = createOccurrences(input, duration.durationMinutes);
+    const driverIds = [
+      ...(input.driverId == null ? [] : [input.driverId]),
+      ...(input.secondaryDriverIds ?? []),
+    ];
+    await this.assertDriversNotReservedByTrips(
+      pool,
+      partnerId,
+      driverIds,
+      input.startDate,
+      input.endDate,
+    );
     const existingTrips = await this.findExistingTrips(
       input.vehicleId,
-      input.driverId ?? null,
+      driverIds,
       occurrences,
       pool,
     );
-    detectOccurrenceConflicts(occurrences, existingTrips, input.vehicleId, input.driverId ?? null);
+    detectOccurrenceConflicts(
+      occurrences,
+      existingTrips,
+      input.vehicleId,
+      input.driverId ?? null,
+      input.secondaryDriverIds ?? [],
+    );
     for (const occurrence of occurrences) {
       if (!isFutureVietnamDateTime(occurrence.departureTime)) {
         occurrence.conflicts.push('Giờ khởi hành phải ở tương lai theo múi giờ Asia/Ho_Chi_Minh.');
       }
       occurrence.conflicts = [...new Set(occurrence.conflicts)];
     }
+    propagateCycleConflicts(occurrences);
     const validCount = occurrences.filter((item) => item.conflicts.length === 0).length;
     return {
       durationSource: duration.durationSource,
@@ -271,6 +363,7 @@ class RecurringScheduleService {
         ...input,
         weekdays: [...input.weekdays].sort((a, b) => a - b),
         departureTimes: [...input.departureTimes].sort(),
+        secondaryDriverIds: [...(input.secondaryDriverIds ?? [])].sort((a, b) => a - b),
       })).digest('hex');
       if (existingTemplateRows.length > 0) {
         if (existingTemplateRows[0].requestHash !== requestHash) {
@@ -295,6 +388,17 @@ class RecurringScheduleService {
       }
 
       const { vehicle } = await this.validateOwnership(partnerId, input, connection);
+      await this.assertDriversNotReservedByTrips(
+        connection,
+        partnerId,
+        [
+          ...(input.driverId == null ? [] : [input.driverId]),
+          ...(input.secondaryDriverIds ?? []),
+        ],
+        input.startDate,
+        input.endDate,
+        true,
+      );
       const [concurrentTemplateRows] = await connection.query<RowDataPacket[]>(
         `SELECT schedule_template_id AS scheduleTemplateId, request_hash AS requestHash
          FROM schedule_templates
@@ -326,17 +430,27 @@ class RecurringScheduleService {
       }
       const existingTrips = await this.findExistingTrips(
         input.vehicleId,
-        input.driverId ?? null,
+        [
+          ...(input.driverId == null ? [] : [input.driverId]),
+          ...(input.secondaryDriverIds ?? []),
+        ],
         occurrences,
         connection,
       );
-      detectOccurrenceConflicts(occurrences, existingTrips, input.vehicleId, input.driverId ?? null);
+      detectOccurrenceConflicts(
+        occurrences,
+        existingTrips,
+        input.vehicleId,
+        input.driverId ?? null,
+        input.secondaryDriverIds ?? [],
+      );
       for (const occurrence of occurrences) {
         if (!isFutureVietnamDateTime(occurrence.departureTime)) {
           occurrence.conflicts.push('Giờ khởi hành phải ở tương lai theo múi giờ Asia/Ho_Chi_Minh.');
         }
         occurrence.conflicts = [...new Set(occurrence.conflicts)];
       }
+      propagateCycleConflicts(occurrences);
 
       const invalidOccurrences = occurrences.filter((item) => item.conflicts.length > 0);
       if (mode === 'all_or_nothing' && invalidOccurrences.length > 0) {
@@ -377,7 +491,16 @@ class RecurringScheduleService {
         };
       }
 
-      const routeId = await this.getRouteId(connection, input, String(vehicle.vehicle_type));
+      const routeId = await this.getRouteId(
+        connection,
+        input,
+        String(vehicle.vehicle_type),
+        input.departureLocation,
+        input.arrivalLocation,
+      );
+      const routeIds = new Map<string, number>([
+        [`${normalizeLocation(input.departureLocation)}|${normalizeLocation(input.arrivalLocation)}`, routeId],
+      ]);
       const [templateResult] = await connection.execute(
         `INSERT INTO schedule_templates (
            partner_id, route_id, vehicle_id, driver_id, start_date, end_date,
@@ -402,12 +525,19 @@ class RecurringScheduleService {
           input.restDurationMinutes,
           input.bufferDurationMinutes,
           input.minimumTurnaroundMinutes,
-          input.transferDurationMinutes,
+          0,
           input.idempotencyKey,
           requestHash,
         ],
       );
       const scheduleTemplateId = Number((templateResult as { insertId: number }).insertId);
+      if (input.secondaryDriverIds?.length) {
+        await connection.query(
+          `INSERT INTO schedule_template_secondary_drivers (schedule_template_id, driver_id)
+           VALUES ?`,
+          [input.secondaryDriverIds.map((driverId) => [scheduleTemplateId, driverId])],
+        );
+      }
       const [vehicleRows] = await connection.query<RowDataPacket[]>(
         `SELECT total_seats FROM vehicles WHERE vehicle_id = ?`,
         [input.vehicleId],
@@ -418,6 +548,18 @@ class RecurringScheduleService {
 
       for (const occurrence of candidates) {
         const generationKey = `${scheduleTemplateId}:${occurrence.departureTime.replace(/[-: ]/g, '')}`;
+        const routeKey = `${normalizeLocation(occurrence.departureLocation)}|${normalizeLocation(occurrence.arrivalLocation)}`;
+        let occurrenceRouteId = routeIds.get(routeKey);
+        if (occurrenceRouteId == null) {
+          occurrenceRouteId = await this.getRouteId(
+            connection,
+            input,
+            String(vehicle.vehicle_type),
+            occurrence.departureLocation,
+            occurrence.arrivalLocation,
+          );
+          routeIds.set(routeKey, occurrenceRouteId);
+        }
         await connection.query('SAVEPOINT create_recurring_trip');
         try {
           const [tripResult] = await connection.execute(
@@ -428,20 +570,27 @@ class RecurringScheduleService {
                base_price, status
              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Scheduled')`,
             [
-              routeId,
+              occurrenceRouteId,
               input.vehicleId,
               input.driverId ?? null,
               occurrence.departureTime,
               occurrence.arrivalTime,
               occurrence.estimatedDurationMinutes,
               occurrence.minimumTurnaroundMinutes,
-              occurrence.transferDurationMinutes,
+              0,
               scheduleTemplateId,
               generationKey,
               input.basePrice,
             ],
           );
           const tripId = Number((tripResult as { insertId: number }).insertId);
+          if (input.secondaryDriverIds?.length) {
+            await connection.query(
+              `INSERT INTO trip_secondary_drivers (trip_id, driver_id)
+               VALUES ?`,
+              [input.secondaryDriverIds.map((driverId) => [tripId, driverId])],
+            );
+          }
           const seats = generateBusSeats(tripId, totalSeats);
           const seatValues = seats.map((seat) => [
             seat.trip_id,
@@ -496,6 +645,13 @@ class RecurringScheduleService {
          v.vehicle_name AS vehicleName,
          st.driver_id AS driverId,
          d.driver_name AS driverName,
+         (SELECT GROUP_CONCAT(std.driver_id ORDER BY std.driver_id)
+          FROM schedule_template_secondary_drivers std
+          WHERE std.schedule_template_id = st.schedule_template_id) AS secondaryDriverIds,
+         (SELECT GROUP_CONCAT(sd.driver_name ORDER BY sd.driver_name SEPARATOR ', ')
+          FROM schedule_template_secondary_drivers std
+          JOIN drivers sd ON sd.driver_id = std.driver_id
+          WHERE std.schedule_template_id = st.schedule_template_id) AS secondaryDriverNames,
          st.start_date AS startDate,
          st.end_date AS endDate,
          st.weekdays,
@@ -507,7 +663,6 @@ class RecurringScheduleService {
          st.rest_duration_minutes AS restDurationMinutes,
          st.buffer_duration_minutes AS bufferDurationMinutes,
          st.minimum_turnaround_minutes AS minimumTurnaroundMinutes,
-         st.transfer_duration_minutes AS transferDurationMinutes,
          st.status,
          COUNT(tr.trip_id) AS generatedTripCount
        FROM schedule_templates st

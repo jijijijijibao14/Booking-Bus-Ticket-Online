@@ -46,6 +46,16 @@ class CommunicationsService {
          c.partner_id AS partnerId,
          p.brand_name AS partnerName,
          c.updated_at AS updatedAt,
+         (SELECT message_id
+          FROM chat_messages m
+          WHERE m.conversation_id = c.conversation_id
+          ORDER BY m.message_id DESC
+          LIMIT 1) AS lastMessageId,
+         (SELECT sender_role
+          FROM chat_messages m
+          WHERE m.conversation_id = c.conversation_id
+          ORDER BY m.message_id DESC
+          LIMIT 1) AS lastMessageSenderRole,
          (SELECT message_text
           FROM chat_messages m
           WHERE m.conversation_id = c.conversation_id

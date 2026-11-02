@@ -52,6 +52,11 @@ export default function MerchantSchedule({ schedules, buses, drivers, loading, e
                 <td className="p-4 font-mono text-sm">{schedule.bus}</td>
                 <td className="p-4">
                   <div className="text-sm font-semibold">{schedule.driver || 'Chưa có'}</div>
+                  {schedule.secondaryDriverNames && (
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Tài xế phụ: {schedule.secondaryDriverNames}
+                    </div>
+                  )}
                 </td>
                 <td className="p-4">
                   {`${new Date(schedule.departureTime).toLocaleDateString('vi-VN')} - ${new Date(

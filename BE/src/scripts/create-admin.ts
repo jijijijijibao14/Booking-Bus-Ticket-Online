@@ -2,6 +2,10 @@ import 'dotenv/config';
 import { RowDataPacket } from 'mysql2/promise';
 import pool from '../config/database.js';
 import { hashPassword } from '../modules/auth/password.util.js';
+import {
+  assertPhoneAvailable,
+  normalizeVietnamesePhone,
+} from '../utils/contact-validation.util.js';
 
 interface ExistingAdmin extends RowDataPacket {
   user_id: number;
@@ -10,7 +14,9 @@ interface ExistingAdmin extends RowDataPacket {
 async function createFirstAdmin() {
   const { ADMIN_USERNAME, ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_FULL_NAME } =
     process.env;
-  const adminPhone = process.env.ADMIN_PHONE || null;
+  const adminPhone = process.env.ADMIN_PHONE
+    ? normalizeVietnamesePhone(process.env.ADMIN_PHONE)
+    : null;
 
   if (!ADMIN_USERNAME || !ADMIN_EMAIL || !ADMIN_PASSWORD || !ADMIN_FULL_NAME) {
     throw new Error(
@@ -32,6 +38,7 @@ async function createFirstAdmin() {
     if (admins.length > 0) {
       throw new Error('An admin account already exists; no account was created.');
     }
+    if (adminPhone) await assertPhoneAvailable(connection, adminPhone);
 
     const passwordHash = await hashPassword(ADMIN_PASSWORD);
     await connection.query(

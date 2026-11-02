@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 
 import PersonalInfo from './PersonalInfo';
+import AvatarUploader from './AvatarUploader';
 import WalletComponent from './Wallet';
 import BookingHistory from './bookings/BookingHistory';
 import { getUserProfile } from '@/api';
@@ -292,7 +293,7 @@ export default function CustomerProfile() {
           <aside className="lg:col-span-1">
             <div className="bg-white rounded-xl p-6 shadow-sm border border-border">
               <div className="text-center mb-6">
-                <User className="w-16 h-16 text-primary mx-auto mb-3 p-3 bg-primary/10 rounded-full" />
+                <AvatarUploader fallback={<User className="h-9 w-9" />} />
 
                 <h2 className="font-bold text-xl text-foreground">
                   {user.name || 'Khách hàng'}

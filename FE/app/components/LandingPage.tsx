@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bus, Calendar, Users, MapPin, ShieldCheck, Clock, HeadphonesIcon, ThumbsUp, Mail, Phone, Facebook, Twitter, Instagram, User, ChevronDown, LogOut, Building2, LayoutDashboard, CalendarDays, RefreshCw, BarChart3, Star, MessageCircle, History } from 'lucide-react';
+import { Bus, Calendar, Users, MapPin, ShieldCheck, Clock, HeadphonesIcon, ThumbsUp, Mail, Phone, Facebook, Twitter, Instagram, User, ChevronDown, LogOut, Building2, LayoutDashboard, CalendarDays, RefreshCw, BarChart3, Star, MessageCircle, History, Ticket, CreditCard, Wallet } from 'lucide-react';
 import Masonry, { ResponsiveMasonry } from 'react-responsive-masonry'; 
 import { motion } from 'motion/react';
 import { getMerchantProfile, searchTrips } from '@/api';
@@ -60,6 +60,7 @@ export default function LandingPage() {
   }, []);
 
   const handleLogout = () => {
+    const isAdmin = localStorage.getItem('role') === 'Admin';
     localStorage.removeItem('token');
     localStorage.removeItem('role');
     localStorage.removeItem('userName');
@@ -69,15 +70,20 @@ export default function LandingPage() {
     localStorage.removeItem('rememberedEmail');
     setIsLoggedIn(false);
     setUserRole('');
-    navigate('/');
+    navigate(isAdmin ? '/login' : '/');
   };
 
   const openMerchantPage = (tab: string) => {
     navigate(`/merchant/${tab}`);
   };
 
-  const isPartner = isLoggedIn && userRole === 'Partner';
+  const openAdminPage = (tab: string) => {
+    navigate(`/admin?tab=${tab}`);
+  };
 
+  const isPartner = isLoggedIn && userRole === 'Partner';
+  const isAdmin = isLoggedIn && userRole === 'Admin';
+  const isStaff = isPartner || isAdmin;
   const [searchData, setSearchData] = useState({
     from: '',
     to: '',
@@ -240,13 +246,13 @@ export default function LandingPage() {
                   <div className="group relative">
                     <button
                       type="button"
-                      onClick={() => isPartner ? openMerchantPage('overview') : navigate(userRole === 'Admin' ? '/admin' : '/profile')}
+                      onClick={() => isPartner ? openMerchantPage('overview') : navigate(userRole === 'Admin' ? '/admin?tab=overview' : '/profile')}
                       className="flex items-center gap-2 rounded-xl px-3 py-2 font-semibold text-blue-900 transition hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-300"
                       aria-haspopup="true"
                     >
                       <User className="h-5 w-5" />
                       <span className="max-w-44 truncate">
-                        {isPartner ? partnerName || userName || 'Nhà xe' : userName || 'Customer'}
+                        {isPartner ? partnerName || userName || 'Nhà xe' : userRole === 'Admin' ? 'Quản trị hệ thống' : userName || 'Customer'}
                       </span>
                       <ChevronDown className="h-4 w-4" />
                     </button>
@@ -260,11 +266,19 @@ export default function LandingPage() {
                               { label: 'Yêu cầu hoàn tiền', icon: RefreshCw, action: () => openMerchantPage('refunds') },
                               { label: 'Báo cáo doanh thu', icon: BarChart3, action: () => openMerchantPage('analytics') },
                               { label: 'Đánh giá', icon: Star, action: () => openMerchantPage('feedback') },
-                              { label: 'Tin nhắn', icon: MessageCircle, action: () => openMerchantPage('messages') },
                             ]
                           : userRole === 'Customer'
                             ? [{ label: 'View Profile', icon: User, action: () => navigate('/profile') }]
-                            : [{ label: 'Quản trị', icon: LayoutDashboard, action: () => navigate('/admin') }]
+                            : [
+                                { label: 'Tổng quan hoạt động', icon: LayoutDashboard, action: () => openAdminPage('overview') },
+                                { label: 'Báo cáo & phân tích', icon: BarChart3, action: () => openAdminPage('analytics') },
+                                { label: 'Danh sách người dùng', icon: Users, action: () => openAdminPage('customers') },
+                                { label: 'Quản lý đối tác', icon: Building2, action: () => openAdminPage('partners') },
+                                { label: 'Danh sách vé', icon: Ticket, action: () => openAdminPage('tickets') },
+                                { label: 'Giao dịch thanh toán', icon: CreditCard, action: () => openAdminPage('payments') },
+                                { label: 'Quản lý hoàn tiền', icon: RefreshCw, action: () => openAdminPage('refunds') },
+                                { label: 'Chi trả & hoạt động tài chính', icon: Wallet, action: () => openAdminPage('wallet') },
+                              ]
                         ).map(({ label, icon: Icon, action }) => (
                           <button
                             key={label}
@@ -345,9 +359,52 @@ export default function LandingPage() {
                   Mở trang quản lý
                 </button>
               </motion.div>
+            ) : isAdmin ? (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.6, delay: 0.2 }}
+                className="mx-auto max-w-3xl rounded-3xl border border-white/70 bg-white/95 p-8 text-center shadow-2xl backdrop-blur-md md:p-12"
+              >
+                <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-100 text-indigo-700">
+                  <ShieldCheck className="h-8 w-8" />
+                </div>
+                <p className="mb-2 text-sm font-bold uppercase tracking-[0.2em] text-indigo-700">Cổng quản trị VIỆTGO</p>
+                <h2 className="mb-4 text-3xl font-extrabold leading-tight text-slate-900 md:text-4xl">
+                  Chào mừng quản trị viên, hãy kiểm tra hệ thống nào!
+                </h2>
+                <p className="mx-auto mb-7 max-w-xl text-slate-600">
+                  Giám sát người dùng, đối tác, vé, thanh toán và các yêu cầu hoàn tiền trên toàn nền tảng.
+                </p>
+                <div className="flex flex-wrap items-center justify-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => openAdminPage('overview')}
+                    className="inline-flex items-center gap-2 rounded-xl bg-indigo-700 px-6 py-3 font-bold text-white shadow-lg shadow-indigo-700/20 transition hover:bg-indigo-800"
+                  >
+                    <LayoutDashboard className="h-5 w-5" />
+                    Mở trang quản trị
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openAdminPage('partners')}
+                    className="inline-flex items-center gap-2 rounded-xl border border-indigo-200 bg-white px-5 py-3 font-semibold text-indigo-700 transition hover:bg-indigo-50"
+                  >
+                    <Building2 className="h-5 w-5" />
+                    Duyệt đối tác
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openAdminPage('refunds')}
+                    className="inline-flex items-center gap-2 rounded-xl border border-indigo-200 bg-white px-5 py-3 font-semibold text-indigo-700 transition hover:bg-indigo-50"
+                  >
+                    <RefreshCw className="h-5 w-5" />
+                    Xử lý hoàn tiền
+                  </button>
+                </div>
+              </motion.div>
             ) : (
             <motion.div
-              initial={{ opacity: 0, y: -20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6 }}
               className="text-center mb-10 text-white"
@@ -357,7 +414,7 @@ export default function LandingPage() {
             </motion.div>
             )}
 
-            {!isPartner && (
+            {!isStaff && (
             <motion.div
               ref={tripSearchRef}
               initial={{ opacity: 0, y: 20 }}
@@ -500,7 +557,7 @@ export default function LandingPage() {
           </div>
         </section>
 
-        {!isPartner && (
+        {!isStaff && (
           <section className="bg-white px-4 py-14 sm:px-6 lg:px-8">
             <div className="mx-auto max-w-7xl">
               <h2 className="mb-7 text-2xl font-bold text-slate-900">Tuyến đường phổ biến</h2>
@@ -532,6 +589,8 @@ export default function LandingPage() {
           </section>
         )}
 
+        {!isAdmin && (
+        <>
         {/* Why Choose Us Section */}
         <section className="py-20 bg-slate-50">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -605,6 +664,8 @@ export default function LandingPage() {
   </Masonry>
 </ResponsiveMasonry>
         </section>
+        </>
+        )}
       </main>
 
       {/* Footer Section */}

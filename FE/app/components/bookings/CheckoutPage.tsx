@@ -23,6 +23,15 @@ export default function CheckoutPage() {
     successNavigationState,
     displayInfo,
   } = location.state || {};
+  const bookingSuccessDetails = {
+    ...successNavigationState,
+    depart:
+      successNavigationState?.depart ||
+      displayInfo?.depart,
+    return:
+      successNavigationState?.return ||
+      displayInfo?.return,
+  };
 
   const [paymentMethod, setPaymentMethod] =
     useState<'wallet' | 'qr'>('wallet');
@@ -148,7 +157,7 @@ export default function CheckoutPage() {
           const bookingResult: any =
             await handleConfirmBooking(
               vnpayPayload,
-              successNavigationState,
+              bookingSuccessDetails,
               {
                 navigateOnSuccess: false,
                 showSuccessToast: false,
@@ -261,7 +270,7 @@ export default function CheckoutPage() {
         sessionStorage.setItem(
           'bookingSuccessState',
           JSON.stringify({
-            ...successNavigationState,
+            ...bookingSuccessDetails,
             bookingCode: createdBookingCodes.join(', '),
             bookingCodes: createdBookingCodes,
             orderCode,
@@ -308,7 +317,7 @@ export default function CheckoutPage() {
 
         await handleConfirmBooking(
           walletPayload,
-          successNavigationState,
+          bookingSuccessDetails,
         );
 
         return;
@@ -372,7 +381,7 @@ export default function CheckoutPage() {
 
       navigate('/booking/success', {
         state: {
-          ...successNavigationState,
+          ...bookingSuccessDetails,
           bookingCode:
             walletRoundtripData?.bookingCode ||
             walletRoundtripData?.bookingCodes?.join(', '),

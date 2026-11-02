@@ -5,6 +5,7 @@ import {
 } from 'react-router-dom';
 import { Toaster } from 'sonner';
 import { GoogleOAuthProvider } from '@react-oauth/google';
+import ModalDialogHost from './components/ui/ModalDialogHost';
 
 // Các trang chính
 import LandingPage from './components/LandingPage';
@@ -12,8 +13,8 @@ import LoginPage from './components/LoginPage';
 import RegisterPage from './components/RegisterPage';
 import MerchantDashboard from './components/Merchant/MerchantDashboard';
 import MerchantInfo from './components/Merchant/MerchantProfile';
-import AdminPortal from './components/AdminPortal';
 import CustomerProfile from './components/CustomerProfile';
+import Admin from './components/admin/Admin';
 import NotFoundPage from './components/NotFoundPage';
 
 // Các trang booking
@@ -32,6 +33,7 @@ function Root() {
     <>
       <Outlet />
       <CustomerChatWidget />
+      <ModalDialogHost />
     </>
   );
 }
@@ -76,7 +78,7 @@ const router = createBrowserRouter([
       },
       {
         path: '/admin',
-        element: <AdminPortal />,
+        element: <Admin />,
       },
       {
         path: '/profile',

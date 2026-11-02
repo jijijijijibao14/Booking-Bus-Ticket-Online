@@ -1,5 +1,6 @@
 import pool from '../../config/database.js';
 import redisClient from '../../config/redis.js';
+import type { RowDataPacket } from 'mysql2/promise';
 
 import {
   normalizeLocation,
@@ -23,7 +24,7 @@ export class TripService {
     const startDate = `${departureDate} 00:00:00`;
     const endDate = `${departureDate} 23:59:59`;
 
-    const [results] = await pool.query(
+    const [results] = await pool.query<RowDataPacket[]>(
       `SELECT
          t.trip_id,
          t.departure_time,
@@ -32,10 +33,16 @@ export class TripService {
          r.departure_location,
          r.arrival_location,
          v.vehicle_name,
-         v.vehicle_type
+         v.vehicle_type,
+         p.brand_name AS operator,
+         CONCAT('/api/trips/vehicles/', v.vehicle_id, '/image') AS image_url,
+         (SELECT COUNT(*) FROM seats s WHERE s.trip_id = t.trip_id) AS total_seats,
+         (SELECT COUNT(*) FROM seats s
+          WHERE s.trip_id = t.trip_id AND s.status = 'Available') AS available_seats
        FROM trips t
        INNER JOIN routes r ON t.route_id = r.route_id
        INNER JOIN vehicles v ON t.vehicle_id = v.vehicle_id
+       LEFT JOIN partner_profiles p ON p.partner_id = v.partner_id
        WHERE r.departure_location = ?
          AND r.arrival_location = ?
          AND r.vehicle_type = 'Bus'
@@ -50,7 +57,7 @@ export class TripService {
     return results as any[];
   }
 
-  async getSeatLayout(tripId: string | number): Promise<any> {
+  async getSeatLayout(tripId: string | number, userId?: number | string): Promise<any> {
     const realTripId = Number(tripId);
     if (!Number.isSafeInteger(realTripId) || realTripId <= 0) {
       throw new Error('Ma chuyen xe khong hop le.');
@@ -96,8 +103,11 @@ export class TripService {
           ? 'right'
           : null;
       const databaseStatus = String(seat.status).toLowerCase();
-      const status = databaseStatus === 'available' && lockStatuses[index] !== null
-        ? 'holding'
+      const lockOwner = lockStatuses[index];
+      const status = databaseStatus === 'available' && lockOwner !== null
+        ? userId != null && lockOwner === String(userId)
+          ? 'selected'
+          : 'holding'
         : databaseStatus;
 
       return {

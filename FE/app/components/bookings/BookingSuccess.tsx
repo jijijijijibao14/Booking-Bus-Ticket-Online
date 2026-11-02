@@ -1,14 +1,27 @@
 import { useLocation, useNavigate } from 'react-router-dom';
-import { CheckCircle, Download, Share2, Bus, Calendar, MapPin, User, CreditCard } from 'lucide-react';
+import { CheckCircle, Download, Share2, Bus, Calendar, Clock, MapPin, User, CreditCard } from 'lucide-react';
 import { useRef, useEffect, useState } from 'react';
 import { toPng } from 'html-to-image';
+
+interface JourneyDetails {
+  trip?: {
+    from?: string;
+    to?: string;
+    travelDate?: string;
+    departureDate?: string;
+    departureTime?: string;
+    operator?: string;
+    busType?: string;
+  };
+  seats?: string[] | string;
+}
 
 export default function BookingSuccess() {
   const location = useLocation();
   const navigate = useNavigate();
   const bookingData = location.state || {};
 
-  const passengerEmail = bookingData.email; 
+  const passengerEmail = bookingData.email || localStorage.getItem('userEmail') || ''; 
 
   const ticketRef = useRef<HTMLDivElement>(null);
   const [hasSentEmail, setHasSentEmail] = useState(false);
@@ -16,6 +29,89 @@ export default function BookingSuccess() {
   const qrCode = bookingData.qrCode; 
   const bookingId = bookingData.bookingCode || `DL${Date.now().toString().slice(-8)}`;
   const bookingDate = new Date().toLocaleDateString('vi-VN');
+  const departInfo =
+    bookingData.depart ||
+    bookingData.displayInfo?.depart || {
+    trip: bookingData.trip,
+    seats: bookingData.seats,
+  };
+  const returnInfo =
+    bookingData.return ||
+    bookingData.displayInfo?.return;
+
+  const renderJourneyDetails = (
+    title: string,
+    journey: JourneyDetails,
+  ) => {
+    const trip = journey.trip;
+    const seats = Array.isArray(journey?.seats)
+      ? journey.seats.join(', ')
+      : journey?.seats || 'N/A';
+
+    return (
+      <section
+        key={title}
+        className="rounded-xl border border-slate-200 bg-slate-50 p-4"
+      >
+        <h3 className="mb-3 font-semibold text-slate-900">
+          {title}
+        </h3>
+        <p className="mb-4 flex items-center gap-2 text-lg font-bold text-primary">
+          <MapPin className="h-5 w-5 shrink-0" />
+          {trip?.from || 'N/A'} → {trip?.to || 'N/A'}
+        </p>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <div className="mb-1 flex items-center gap-2 text-muted-foreground">
+              <Calendar className="h-4 w-4" />
+              <span className="text-sm">Ngày khởi hành</span>
+            </div>
+            <p className="font-medium">
+              {trip?.travelDate || trip?.departureDate || 'N/A'}
+            </p>
+          </div>
+
+          <div>
+            <div className="mb-1 flex items-center gap-2 text-muted-foreground">
+              <Clock className="h-4 w-4" />
+              <span className="text-sm">Thời gian xuất phát</span>
+            </div>
+            <p className="font-medium">
+              {trip?.departureTime || 'N/A'}
+            </p>
+          </div>
+
+          <div>
+            <div className="mb-1 flex items-center gap-2 text-muted-foreground">
+              <User className="h-4 w-4" />
+              <span className="text-sm">Ghế ngồi</span>
+            </div>
+            <p className="font-medium">{seats}</p>
+          </div>
+
+          <div>
+            <div className="mb-1 flex items-center gap-2 text-muted-foreground">
+              <Bus className="h-4 w-4" />
+              <span className="text-sm">Nhà xe</span>
+            </div>
+            <p className="font-medium">
+              {trip?.operator || 'N/A'}
+            </p>
+          </div>
+
+          <div>
+            <div className="mb-1 flex items-center gap-2 text-muted-foreground">
+              <Bus className="h-4 w-4" />
+              <span className="text-sm">Hạng xe</span>
+            </div>
+            <p className="font-medium">
+              {trip?.busType || 'N/A'}
+            </p>
+          </div>
+        </div>
+      </section>
+    );
+  };
 
   const getIcon = () => {
     return <Bus className="w-8 h-8" />;
@@ -26,31 +122,41 @@ export default function BookingSuccess() {
   };
 
   useEffect(() => {
-    const sendAutomaticEmail = async () => {
+    
       if (!passengerEmail || hasSentEmail || !ticketRef.current) return;
 
-      try {
-        setTimeout(async () => {
-          if (!ticketRef.current) return;
-          
-          const base64Image = await toPng(ticketRef.current, { pixelRatio: 1, cacheBust: true });
+      const timeoutId = window.setTimeout(() => {
+      const sendAutomaticEmail = async () => {
+        if (!ticketRef.current) return;
 
-          await fetch('http://localhost:3001/api/bookings/send-ticket-email', {
+        try {
+          const base64Image = await toPng(ticketRef.current, {
+            pixelRatio: 1,
+            cacheBust: true,
+            skipFonts: true,
+          });
+
+          const response = await fetch('http://localhost:3001/api/bookings/send-ticket-email', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email: passengerEmail, ticketImage: base64Image })
           });
-          
-          setHasSentEmail(true); 
+
+          if (!response.ok) {
+            throw new Error(`Gửi email thất bại: HTTP ${response.status}`);
+          }
+
+          setHasSentEmail(true);
           console.log(`✅ Đã gửi vé tự động đến: ${passengerEmail}`);
-        }, 1500); 
+        } catch (error) {
+          console.error('❌ Lỗi tự động gửi vé:', error);
+        }
+      };
 
-      } catch (error) {
-        console.error('❌ Lỗi tự động gửi vé:', error);
-      }
-    };
+      void sendAutomaticEmail();
+    }, 1500);
 
-    sendAutomaticEmail();
+    return () => window.clearTimeout(timeoutId);
   }, [passengerEmail, hasSentEmail]);
 
   return (
@@ -83,52 +189,28 @@ export default function BookingSuccess() {
           </div>
 
           <div className="p-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-              <div>
-                <div className="flex items-center gap-2 text-muted-foreground mb-2">
-                  <MapPin className="w-4 h-4" />
-                  <span className="text-sm">Hành trình</span>
-                </div>
-                <p className="font-semibold">
-                  {bookingData.trip?.from || 'Hà Nội'} → {bookingData.trip?.to || 'TP. Hồ Chí Minh'}
-                </p>
+            <div className="mb-6 rounded-xl border border-primary/15 bg-primary/5 p-4">
+              <div className="mb-1 flex items-center gap-2 text-muted-foreground">
+                <Calendar className="h-4 w-4" />
+                <span className="text-sm">Ngày đặt vé</span>
               </div>
+              <p className="font-semibold">{bookingDate}</p>
+            </div>
 
-              <div>
-                <div className="flex items-center gap-2 text-muted-foreground mb-2">
-                  <Calendar className="w-4 h-4" />
-                  <span className="text-sm">Ngày khởi hành</span>
-                </div>
-                <p className="font-semibold">{bookingDate}</p>
+            <div className="mb-6 space-y-4">
+              {renderJourneyDetails('Chuyến đi', departInfo)}
+              {returnInfo &&
+                renderJourneyDetails('Chuyến về', returnInfo)}
+            </div>
+
+            <div className="mb-6 flex items-center justify-between border-t border-slate-200 pt-4">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <CreditCard className="h-5 w-5" />
+                <span className="font-medium">Tổng tiền</span>
               </div>
-
-              {bookingData.type === 'bus' && (
-                <div>
-                  <div className="flex items-center gap-2 text-muted-foreground mb-2">
-                    <Bus className="w-4 h-4" />
-                    <span className="text-sm">Nhà xe</span>
-                  </div>
-                  <p className="font-semibold">{bookingData.trip?.operator || 'N/A'}</p>
-                </div>
-              )}
-
-              <div>
-                <div className="flex items-center gap-2 text-muted-foreground mb-2">
-                  <User className="w-4 h-4" />
-                  <span className="text-sm">Ghế</span>
-                </div>
-                <p className="font-semibold">
-                  {bookingData.seats?.join(', ') || 'N/A'}
-                </p>
-              </div>
-
-              <div>
-                <div className="flex items-center gap-2 text-muted-foreground mb-2">
-                  <CreditCard className="w-4 h-4" />
-                  <span className="text-sm">Tổng tiền</span>
-                </div>
-                <p className="text-2xl font-bold text-primary">{bookingData.totalPrice?.toLocaleString('vi-VN')}₫</p>
-              </div>
+              <p className="text-2xl font-bold text-primary">
+                {Number(bookingData.totalPrice || 0).toLocaleString('vi-VN')}₫
+              </p>
             </div>
 
             <div className="border-t border-dashed border-border pt-6">

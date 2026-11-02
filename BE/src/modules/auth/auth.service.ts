@@ -6,6 +6,13 @@ import jwt from 'jsonwebtoken';
 import pool from '../../config/database.js';
 import redisClient from '../../config/redis.js';
 import { hashPassword, verifyPassword } from './password.util.js';
+import {
+  assertBusinessLicenseAvailable,
+  assertPhoneAvailable,
+  normalizeBusinessLicenseNumber,
+  normalizeVietnamesePhone,
+} from '../../utils/contact-validation.util.js';
+import type { PoolConnection } from 'mysql2/promise';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 
 if (!GOOGLE_CLIENT_ID) {
@@ -88,6 +95,12 @@ async loginWithGoogle(token: string) {
       throw new Error('Tài khoản đã bị từ chối truy cập hệ thống.');
     }
 
+    if (user.status === 'Suspended' || user.status === 'Deleted') {
+      throw new Error(user.status === 'Deleted'
+        ? 'Tài khoản đã được lưu trữ và không thể đăng nhập.'
+        : 'Tài khoản đã bị khóa. Vui lòng liên hệ quản trị viên.');
+    }
+
     // 5. Tạo JWT của hệ thống VIETGO
     const jwtToken = jwt.sign(
       {
@@ -150,10 +163,7 @@ async loginWithGoogle(token: string) {
       throw new Error('Email phải đúng định dạng');
     }
 
-    const phoneRegex = /^0[0-9]{9}$/;
-    if (!phoneRegex.test(phone)) {
-      throw new Error('Số điện thoại phải có đúng 10 chữ số và bắt đầu bằng số 0!');
-    }
+    const normalizedPhone = normalizeVietnamesePhone(phone);
 
     const passwordStrengthRegex = /^(?=.*[A-Z])(?=.*[!@#$%^&*(),.?":{}|<>]).{6,}$/;
     if (!passwordStrengthRegex.test(password)) {
@@ -169,16 +179,19 @@ async loginWithGoogle(token: string) {
     if (role === 'Partner' && (!data.brand_name || !data.license_number)) {
       throw new Error('Vui lòng cung cấp tên nhà xe và số giấy phép kinh doanh.');
     }
+    const licenseNumber = role === 'Partner'
+      ? normalizeBusinessLicenseNumber(data.license_number)
+      : undefined;
 
     return {
       username: String(username).trim(),
       email: String(email).trim().toLowerCase(),
       password,
       full_name: String(full_name).trim(),
-      phone: String(phone).trim(),
+      phone: normalizedPhone,
       role,
       brand_name: data.brand_name,
-      license_number: data.license_number,
+      license_number: licenseNumber,
     };
   }
 
@@ -193,9 +206,27 @@ async loginWithGoogle(token: string) {
     }
   }
 
+  private async ensurePhoneAvailable(
+    phone: string,
+    executor: typeof pool | PoolConnection = pool,
+  ) {
+    await assertPhoneAvailable(executor, phone);
+  }
+
+  private async ensureBusinessLicenseAvailable(
+    licenseNumber: string | undefined,
+    executor: typeof pool | PoolConnection = pool,
+  ) {
+    if (licenseNumber) {
+      await assertBusinessLicenseAvailable(executor, licenseNumber);
+    }
+  }
+
   async requestRegistrationOtp(data: any) {
     const registration = this.validateRegistration(data);
     await this.ensureEmailAvailable(registration.email);
+    await this.ensurePhoneAvailable(registration.phone);
+    await this.ensureBusinessLicenseAvailable(registration.license_number);
 
     const cooldownKey = registrationOtpCooldownKey(registration.email);
     const cooldownSeconds = await redisClient.ttl(cooldownKey);
@@ -300,7 +331,7 @@ async loginWithGoogle(token: string) {
   }
 
   private async createRegistration(data: any) {
-    const { username, email, password, full_name, phone, role } =
+    const { username, email, password, full_name, phone, role, brand_name, license_number } =
       this.validateRegistration(data);
     await this.ensureEmailAvailable(email);
 
@@ -309,6 +340,8 @@ async loginWithGoogle(token: string) {
 
     try {
       await connection.beginTransaction();
+      await this.ensurePhoneAvailable(phone, connection);
+      await this.ensureBusinessLicenseAvailable(license_number, connection);
 
       const passwordHash = await hashPassword(password);
       const [userResult]: any = await connection.query(
@@ -323,7 +356,7 @@ async loginWithGoogle(token: string) {
           `INSERT INTO partner_profiles
             (partner_id, brand_name, license_number)
            VALUES (?, ?, ?)`,
-          [userResult.insertId, data.brand_name, data.license_number],
+          [userResult.insertId, brand_name, license_number],
         );
       }
 
@@ -341,6 +374,12 @@ async loginWithGoogle(token: string) {
       };
     } catch (error) {
       await connection.rollback();
+      if (
+        (error as { code?: string; message?: string })?.code === 'ER_DUP_ENTRY' &&
+        (error as { message?: string })?.message?.includes('uq_partner_profiles_license')
+      ) {
+        throw new Error('Số giấy phép kinh doanh đã được sử dụng.');
+      }
       throw error;
     } finally {
       connection.release();

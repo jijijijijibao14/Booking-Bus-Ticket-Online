@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -17,6 +17,7 @@ import { toast } from 'sonner';
 
 import { ReviewsDialog } from '../ReviewsDialog';
 import {
+  getPublicAssetUrl,
   getTripSeatLayout,
   holdSeat,
   releaseSeat,
@@ -66,6 +67,45 @@ export default function BusBooking() {
   const [seats, setSeats] = useState<Seat[]>([]);
   const [loadingSeats, setLoadingSeats] = useState(false);
   const [isReviewsOpen, setIsReviewsOpen] = useState(false);
+  const heldSeatsRef = useRef<Map<number, Set<number>>>(new Map());
+  const preserveSeatHoldsOnExitRef = useRef(false);
+
+  const releaseSeatHolds = async (tripId?: number) => {
+    const heldTrips: Array<[number, Set<number>]> = tripId === undefined
+      ? [...heldSeatsRef.current.entries()]
+      : [[tripId, heldSeatsRef.current.get(tripId) || new Set<number>()]];
+
+    await Promise.all(
+      heldTrips.map(async ([heldTripId, seatIds]) => {
+        await Promise.all(
+          [...seatIds].map(async (seatId) => {
+            try {
+              await releaseSeat({
+                tripId: heldTripId,
+                seatId,
+              });
+              seatIds.delete(seatId);
+            } catch (error) {
+              console.error(
+                `Không thể nhả ghế ${seatId} của chuyến ${heldTripId}:`,
+                error,
+              );
+            }
+          }),
+        );
+
+        if (seatIds.size === 0) {
+          heldSeatsRef.current.delete(heldTripId);
+        }
+      }),
+    );
+  };
+
+  useEffect(() => () => {
+    if (!preserveSeatHoldsOnExitRef.current) {
+      void releaseSeatHolds();
+    }
+  }, []);
 
   const { isSubmitting } = useBooking();
 
@@ -115,8 +155,11 @@ export default function BusBooking() {
 
         return {
           id: trip.trip_id,
+          imageUrl: getPublicAssetUrl(trip.image_url),
 
           operator:
+            trip.operator ||
+            trip.brand_name ||
             trip.vehicle_name ||
             'Nhà xe đối tác',
 
@@ -127,6 +170,11 @@ export default function BusBooking() {
           to:
             trip.arrival_location ||
             searchData.to,
+
+          travelDate:
+            isNaN(departureDate.getTime())
+              ? ''
+              : departureDate.toLocaleDateString('vi-VN'),
 
           departureTime:
             departureDate.toLocaleTimeString('vi-VN', {
@@ -154,6 +202,9 @@ export default function BusBooking() {
             ),
 
           price: Number(trip.base_price || 0),
+          totalSeats: Number(trip.total_seats || 0),
+          availableSeats: Number(trip.available_seats || 0),
+          isFull: Number(trip.total_seats || 0) > 0 && Number(trip.available_seats || 0) === 0,
           busType: 'Giường nằm',
           rating: 5.0,
         };
@@ -184,7 +235,24 @@ export default function BusBooking() {
         const response =
           await getTripSeatLayout(selectedTrip.id);
 
-        setSeats(response.data.data || []);
+        const seatLayout: Seat[] = response.data.data || [];
+        const seatsHeldByCurrentUser = seatLayout.filter(
+          (seat) => seat.status === 'selected',
+        );
+
+        if (seatsHeldByCurrentUser.length > 0) {
+          const heldSeatIds = heldSeatsRef.current.get(selectedTrip.id) || new Set<number>();
+          seatsHeldByCurrentUser.forEach((seat) => {
+            heldSeatIds.add(seat.seatId);
+            append({
+              seatId: seat.seatId,
+              seatName: seat.id,
+            });
+          });
+          heldSeatsRef.current.set(selectedTrip.id, heldSeatIds);
+        }
+
+        setSeats(seatLayout);
       } catch (error: any) {
         console.error(
           'Không thể tải sơ đồ ghế:',
@@ -243,6 +311,7 @@ export default function BusBooking() {
           seatId: seat.seatId,
         });
 
+        heldSeatsRef.current.get(selectedTrip.id)?.delete(seat.seatId);
         remove(existingPassengerIndex);
 
         setSeats((currentSeats) =>
@@ -278,6 +347,10 @@ export default function BusBooking() {
         tripId: selectedTrip.id,
         seatId: seat.seatId,
       });
+
+      const heldSeatIds = heldSeatsRef.current.get(selectedTrip.id) || new Set<number>();
+      heldSeatIds.add(seat.seatId);
+      heldSeatsRef.current.set(selectedTrip.id, heldSeatIds);
 
       append({
         seatId: seat.seatId,
@@ -475,8 +548,11 @@ export default function BusBooking() {
 
           return {
             id: trip.trip_id,
+            imageUrl: getPublicAssetUrl(trip.image_url),
 
             operator:
+              trip.operator ||
+              trip.brand_name ||
               trip.vehicle_name ||
               'Nhà xe đối tác',
 
@@ -487,6 +563,13 @@ export default function BusBooking() {
             to:
               trip.arrival_location ||
               searchData.from,
+
+            travelDate:
+              isNaN(departureDate.getTime())
+                ? ''
+                : departureDate.toLocaleDateString(
+                    'vi-VN',
+                  ),
 
             departureTime:
               departureDate.toLocaleTimeString(
@@ -523,6 +606,9 @@ export default function BusBooking() {
               trip.base_price || 0,
             ),
 
+            totalSeats: Number(trip.total_seats || 0),
+            availableSeats: Number(trip.available_seats || 0),
+            isFull: Number(trip.total_seats || 0) > 0 && Number(trip.available_seats || 0) === 0,
             busType: 'Giường nằm',
             rating: 5.0,
           };
@@ -572,12 +658,49 @@ export default function BusBooking() {
             .totalAmount + totalPrice
         : totalPrice;
 
+    const departDisplay =
+      bookingStep === 'return'
+        ? departureBookingInfo.display
+        : {
+            trip: selectedTrip,
+
+            seats: data.passengers
+              .map(
+                (passenger) =>
+                  passenger.seatName,
+              )
+              .join(', '),
+
+            vehicleType: 'Bus',
+          };
+
+    const returnDisplay =
+      bookingStep === 'return'
+        ? {
+            trip: selectedTrip,
+
+            seats: data.passengers
+              .map(
+                (passenger) =>
+                  passenger.seatName,
+              )
+              .join(', '),
+
+            vehicleType: 'Bus',
+          }
+        : undefined;
+
     const checkoutData = {
       bookingPayloads: finalPayloads,
 
       successNavigationState: {
         type: 'bus',
+        email: contactEmail,
         trip: selectedTrip,
+        depart: departDisplay,
+        ...(returnDisplay
+          ? { return: returnDisplay }
+          : {}),
 
         seats: data.passengers.map(
           (passenger) =>
@@ -588,40 +711,10 @@ export default function BusBooking() {
       },
 
       displayInfo: {
-        depart:
-          bookingStep === 'return'
-            ? departureBookingInfo.display
-            : {
-                trip: selectedTrip,
-
-                seats: data.passengers
-                  .map(
-                    (passenger) =>
-                      passenger.seatName,
-                  )
-                  .join(', '),
-
-                vehicleType: 'Bus',
-              },
-
-        ...(
-          bookingStep === 'return'
-            ? {
-                return: {
-                  trip: selectedTrip,
-
-                  seats: data.passengers
-                    .map(
-                      (passenger) =>
-                        passenger.seatName,
-                    )
-                    .join(', '),
-
-                  vehicleType: 'Bus',
-                },
-              }
-            : {}
-        ),
+        depart: departDisplay,
+        ...(returnDisplay
+          ? { return: returnDisplay }
+          : {}),
 
         totalPrice: finalTotalPrice,
       },
@@ -630,6 +723,7 @@ export default function BusBooking() {
     /*
      * Chuyển tới màn hình chọn phương thức thanh toán.
      */
+    preserveSeatHoldsOnExitRef.current = true;
     navigate(
       '/checkout',
       {
@@ -743,8 +837,10 @@ export default function BusBooking() {
         <div className="max-w-7xl mx-auto px-4 py-4">
           <button
             type="button"
-            onClick={() => {
+            onClick={async () => {
               if (selectedTrip) {
+                await releaseSeatHolds(selectedTrip.id);
+                remove();
                 setSelectedTrip(null);
                 return;
               }
@@ -806,8 +902,16 @@ export default function BusBooking() {
                                 className="bg-white rounded-xl border border-border p-6 shadow-sm hover:shadow-md transition-shadow"
                               >
                                 <div className="flex flex-col md:flex-row md:items-center gap-6">
-                                  <div className="w-16 h-16 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
+                                  <div className="relative w-24 h-20 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0 overflow-hidden">
                                     <Bus className="w-8 h-8 text-primary" />
+                                    {trip.imageUrl && (
+                                      <img
+                                        src={trip.imageUrl}
+                                        alt={`Ảnh ${trip.operator}`}
+                                        className="absolute inset-0 h-full w-full object-cover"
+                                        onError={(event) => event.currentTarget.remove()}
+                                      />
+                                    )}
                                   </div>
 
                                   <div className="flex-1">
@@ -908,6 +1012,15 @@ export default function BusBooking() {
                                           trip.busType
                                         }
                                       </span>
+                                      {trip.isFull ? (
+                                        <span className="px-3 py-1 rounded-full bg-red-100 text-red-700 text-xs font-semibold">
+                                          Đã hết chỗ
+                                        </span>
+                                      ) : trip.totalSeats > 0 ? (
+                                        <span className="px-3 py-1 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium">
+                                          Còn {trip.availableSeats} chỗ
+                                        </span>
+                                      ) : null}
                                     </div>
                                   </div>
 
@@ -925,14 +1038,15 @@ export default function BusBooking() {
 
                                     <button
                                       type="button"
-                                      onClick={() =>
-                                        setSelectedTrip(
-                                          trip,
-                                        )
-                                      }
-                                      className="w-full py-3 rounded-lg bg-primary text-white font-bold hover:bg-primary/90 transition-colors shadow-sm"
+                                      disabled={trip.isFull}
+                                      onClick={() => setSelectedTrip(trip)}
+                                      className={`w-full py-3 rounded-lg text-white font-bold transition-colors shadow-sm ${
+                                        trip.isFull
+                                          ? 'cursor-not-allowed bg-slate-400'
+                                          : 'bg-primary hover:bg-primary/90'
+                                      }`}
                                     >
-                                      Chọn chuyến
+                                      {trip.isFull ? 'Đã hết chỗ' : 'Chọn chuyến'}
                                     </button>
                                   </div>
                                 </div>
@@ -987,8 +1101,16 @@ export default function BusBooking() {
               <>
                 <div className="mb-6 p-6 bg-white rounded-xl border border-border">
                   <div className="flex items-start gap-4">
-                    <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
+                    <div className="relative w-16 h-16 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0 overflow-hidden">
                       <Bus className="w-6 h-6 text-primary" />
+                      {selectedTrip.imageUrl && (
+                        <img
+                          src={selectedTrip.imageUrl}
+                          alt={`Ảnh ${selectedTrip.operator}`}
+                          className="absolute inset-0 h-full w-full object-cover"
+                          onError={(event) => event.currentTarget.remove()}
+                        />
+                      )}
                     </div>
 
                     <div className="flex-1">

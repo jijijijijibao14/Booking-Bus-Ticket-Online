@@ -8,6 +8,8 @@ import {
   UserController,
 } from './user.controller.js';
 
+import { getAvatar, saveAvatar, uploadAvatarFile } from './avatar.js';
+
 const router = Router();
 const userController =
   new UserController();
@@ -30,6 +32,9 @@ router.put(
   verifyToken,
   userController.updateProfile,
 );
+
+router.post('/avatar', verifyToken, uploadAvatarFile, saveAvatar);
+router.get('/:userId/avatar', getAvatar);
 
 router.get(
   '/wallet/transactions',
